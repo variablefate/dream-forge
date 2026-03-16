@@ -134,7 +134,7 @@ class CompatChecker:
         props = torch.cuda.get_device_properties(0)
         compute = f"{props.major}.{props.minor}"
         sm = f"sm_{props.major * 10 + props.minor}"
-        vram = props.total_mem / (1024**3)
+        vram = props.total_memory / (1024**3)
 
         # Smoke-test: simple matmul on GPU
         try:
