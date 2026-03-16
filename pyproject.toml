@@ -27,6 +27,11 @@ dependencies = [
     "rich>=13.0.0",
     # Evaluation
     "matplotlib>=3.10.0",
+    # DeltaNet fused kernels (Triton-based) — critical for VRAM on Qwen3.5
+    "flash-linear-attention>=0.4.2",
+    "triton-windows>=3.6.0 ; sys_platform == 'win32'",
+    "triton>=3.6.0 ; sys_platform != 'win32'",
+    "unsloth>=2026.3.4",
 ]
 
 [tool.uv.sources]

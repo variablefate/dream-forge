@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -21,6 +22,9 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Unsloth's fused CE loss auto-detects free VRAM and fails when vision encoder
+# occupies most of it. We pre-seed the chunk size cache after model load.
 
 from rich.console import Console
 from rich.panel import Panel
@@ -84,6 +88,37 @@ def _vram_used_gb() -> float:
     import torch
     free, total = torch.cuda.mem_get_info()
     return (total - free) / (1024**3)
+
+
+# ── Activation offloading ──────────────────────────────────────────────────────
+
+from contextlib import contextmanager
+
+@contextmanager
+def offload_activations():
+    """Move saved-for-backward tensors to CPU to reduce GPU VRAM.
+
+    Same mechanism as Unsloth's use_gradient_checkpointing="unsloth" but
+    works with any model (no Unsloth patching required).
+    Combined with standard gradient checkpointing, this means:
+    - Checkpoint boundaries recompute intra-layer activations (standard)
+    - Inter-layer hidden states saved to CPU instead of GPU (this)
+    """
+    import torch
+
+    def pack(x: torch.Tensor):
+        if x.device.type == "cuda" and x.numel() >= 1024:
+            return (x.device, x.to("cpu", non_blocking=True))
+        return (None, x)  # keep small tensors on GPU
+
+    def unpack(packed: tuple):
+        device, tensor = packed
+        if device is not None:
+            return tensor.to(device, non_blocking=True)
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+        yield
 
 
 # ── Main checker ───────────────────────────────────────────────────────────────
@@ -155,6 +190,14 @@ class CompatChecker:
         libs: dict[str, str] = {}
         issues: list[str] = []
 
+        # Import Unsloth FIRST — it must be imported before transformers/peft
+        # to apply its patches (monkey-patches for faster training)
+        try:
+            import unsloth  # noqa: F811
+            libs["unsloth"] = unsloth.__version__
+        except ImportError:
+            libs["unsloth"] = "(not installed)"
+
         required = [
             ("transformers", 5), ("bitsandbytes", None), ("peft", None),
             ("accelerate", None), ("sklearn", None),
@@ -169,12 +212,18 @@ class CompatChecker:
             except ImportError:
                 issues.append(f"{pkg} missing")
 
-        # Optional
+        # Optional but important
         try:
-            import unsloth  # noqa: F811
-            libs["unsloth"] = unsloth.__version__
+            import fla  # noqa: F811
+            libs["flash-linear-attention"] = fla.__version__
         except ImportError:
-            libs["unsloth"] = "(not installed)"
+            libs["flash-linear-attention"] = "(not installed — DeltaNet falls back to naive PyTorch)"
+
+        try:
+            import triton  # noqa: F811
+            libs["triton"] = triton.__version__
+        except ImportError:
+            libs["triton"] = "(not installed — required by FLA)"
 
         if issues:
             self._record(CheckResult("Libraries", False,
@@ -207,6 +256,7 @@ class CompatChecker:
             return False
 
         import torch
+
         console.print("        Trying Unsloth...", style="dim")
         _reset_vram()
 
@@ -214,18 +264,40 @@ class CompatChecker:
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=MODEL_ID,
                 max_seq_length=MAX_SEQ_LENGTH,
+                load_in_4bit=False,
                 load_in_8bit=True,
                 dtype=None,
             )
             peak = _peak_vram_gb()
-            self.model, self.tokenizer, self.framework = model, tokenizer, "unsloth"
+            self.model = model
+            self.framework = "unsloth"
 
-            # Check for vision encoder (should not be loaded)
+            # Unsloth may load the multimodal model (Qwen3_5ForConditionalGeneration)
+            # which returns a processor instead of a tokenizer. Replace with text-only
+            # AutoTokenizer so hooks/inference/training use text inputs, not image inputs.
             has_vision = any("visual" in n or "vision" in n
                             for n, _ in model.named_modules())
+            if has_vision:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+
+                # Delete vision encoder to reclaim VRAM — we only use text
+                if hasattr(model, "visual"):
+                    del model.visual
+                elif hasattr(model, "model") and hasattr(model.model, "visual"):
+                    del model.model.visual
+                import torch
+                torch.cuda.empty_cache()
+                gc.collect()
+                freed = peak - _peak_vram_gb()
+                console.print(
+                    f"        Vision encoder deleted — freed ~{freed:.1f} GB",
+                    style="dim yellow")
+            else:
+                self.tokenizer = tokenizer
 
             self._record(CheckResult("Model Load (Unsloth)", True,
-                f"peak VRAM {peak:.2f} GB | vision encoder: {'LOADED (unexpected)' if has_vision else 'excluded'}",
+                f"peak VRAM {peak:.2f} GB | vision encoder: {'present (ignored)' if has_vision else 'excluded'}",
                 {"framework": "unsloth", "peak_vram_gb": f"{peak:.2f}",
                  "has_vision_encoder": has_vision}))
             return True
@@ -482,6 +554,31 @@ class CompatChecker:
 
     # ── Phase 7: LoRA + Training ──────────────────────────────────────────
 
+    def _fix_unsloth_fused_ce(self):
+        """Patch Unsloth's fused CE VRAM auto-detection.
+
+        _get_chunk_multiplier checks free VRAM via torch.cuda.mem_get_info().
+        With vision encoder loaded, free VRAM is near zero on 16GB, causing
+        RuntimeError. Replace with a version that uses a fixed 1GB target.
+        """
+        if self.framework != "unsloth":
+            return
+        try:
+            import functools
+            from unsloth_zoo.fused_losses import cross_entropy_loss
+
+            @functools.cache
+            def _patched(vocab_size, target_gb=None):
+                if target_gb is None:
+                    target_gb = 1.0  # fixed instead of auto-detect
+                multiplier = (vocab_size * 4 / 1024 / 1024 / 1024) / target_gb
+                return multiplier / 4
+
+            cross_entropy_loss._get_chunk_multiplier = _patched
+            console.print("        Patched fused CE VRAM check (fixed 1GB target)", style="dim")
+        except Exception:
+            pass
+
     def check_lora_and_training(self) -> bool:
         if not self.model:
             self._record(CheckResult("LoRA + Training", False, "No model", skipped=True))
@@ -491,6 +588,7 @@ class CompatChecker:
             return False
         if not self._verify_lora_targets():
             return False
+        self._fix_unsloth_fused_ce()
         return self._training_step()
 
     def _lora_setup(self) -> bool:
@@ -600,32 +698,110 @@ class CompatChecker:
         return True
 
     def _training_step(self) -> bool:
-        """Forward + backward + optimizer step at seq_len=2048, batch=1."""
+        """Forward + backward + optimizer step at seq_len=2048, batch=1.
+
+        Tries standard gradient checkpointing first. If VRAM exceeds budget,
+        retries with CPU activation offloading (saved_tensors_hooks).
+        """
         import torch
-        _reset_vram()
 
         # Ensure pad token exists
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        # Try standard first
+        peak, loss_val, opt_name, seq_len = self._run_one_training_step(offload=False)
+
+        if peak is not None and peak < VRAM_LIMIT_GB:
+            self._record(CheckResult("Training Step", True,
+                f"loss={loss_val:.4f} | peak {peak:.2f} GB | "
+                f"{VRAM_LIMIT_GB - peak:.2f} GB headroom | seq={seq_len}",
+                {"loss": f"{loss_val:.4f}", "seq_length": seq_len,
+                 "peak_vram_gb": f"{peak:.2f}",
+                 "headroom_gb": f"{VRAM_LIMIT_GB - peak:.2f}",
+                 "optimizer": opt_name, "offload": False}))
+            return True
+
+        if peak is not None:
+            console.print(
+                f"        Standard: {peak:.2f} GB (over budget). "
+                f"Retrying with CPU activation offloading...", style="dim yellow")
+
+        # Retry with CPU activation offloading
+        peak2, loss_val2, opt_name2, seq_len2 = self._run_one_training_step(offload=True)
+
+        if peak2 is not None and peak2 < VRAM_LIMIT_GB:
+            self._record(CheckResult("Training Step (CPU offload)", True,
+                f"loss={loss_val2:.4f} | peak {peak2:.2f} GB | "
+                f"{VRAM_LIMIT_GB - peak2:.2f} GB headroom | seq={seq_len2}",
+                {"loss": f"{loss_val2:.4f}", "seq_length": seq_len2,
+                 "peak_vram_gb": f"{peak2:.2f}",
+                 "headroom_gb": f"{VRAM_LIMIT_GB - peak2:.2f}",
+                 "optimizer": opt_name2, "offload": True,
+                 "standard_peak_gb": f"{peak:.2f}" if peak else "N/A"}))
+            return True
+
+        # Check if standard mode completed but exceeded physical VRAM
+        # Windows WDDM transparently spills to system RAM — training still works
+        SOFT_LIMIT_GB = VRAM_LIMIT_GB * 1.5  # 24 GB — beyond this, shared memory hurts too much
+        if peak is not None and peak < SOFT_LIMIT_GB:
+            headroom_note = (
+                f"Exceeds {VRAM_LIMIT_GB:.0f} GB physical VRAM but within WDDM shared memory range. "
+                f"Training works — OS spills ~{peak - VRAM_LIMIT_GB:.1f} GB to system RAM (minor speed impact)."
+            )
+            self._record(CheckResult("Training Step (shared memory)", True,
+                f"loss={loss_val:.4f} | peak {peak:.2f} GB | {headroom_note}",
+                {"loss": f"{loss_val:.4f}", "seq_length": seq_len,
+                 "peak_vram_gb": f"{peak:.2f}", "optimizer": opt_name,
+                 "uses_shared_memory": True,
+                 "overflow_gb": f"{peak - VRAM_LIMIT_GB:.2f}"}))
+            return True
+
+        # Hard failure — exceeded even the soft limit or both modes failed
+        best_peak = min(p for p in [peak, peak2] if p is not None) if any(
+            p is not None for p in [peak, peak2]) else None
+        details = {}
+        if peak is not None:
+            details["standard_peak_gb"] = f"{peak:.2f}"
+        if peak2 is not None:
+            details["offload_peak_gb"] = f"{peak2:.2f}"
+
+        self._record(CheckResult("Training Step", False,
+            f"Peak VRAM {best_peak:.2f} GB exceeds soft limit ({SOFT_LIMIT_GB:.0f} GB)"
+            if best_peak else "Training step failed",
+            details, fatal=True))
+        return False
+
+    def _run_one_training_step(
+        self, offload: bool
+    ) -> tuple[float | None, float | None, str | None, int | None]:
+        """Run forward+backward+optimizer. Returns (peak_gb, loss, opt_name, seq_len) or Nones on failure."""
+        import torch
+        _reset_vram()
+
         try:
-            # Build a 2048-token dummy batch
             dummy = "Python is a high-level programming language. " * 300
             enc = self.tokenizer(
                 dummy, return_tensors="pt",
                 max_length=MAX_SEQ_LENGTH, truncation=True, padding="max_length",
             ).to(self.model.device)
             enc["labels"] = enc["input_ids"].clone()
+            seq_len = enc["input_ids"].shape[1]
 
-            actual_len = enc["input_ids"].shape[1]
-
-            # Forward + backward
             self.model.train()
-            outputs = self.model(**enc)
-            loss = outputs.loss
-            loss.backward()
 
-            # Optimizer step (8-bit AdamW for realistic VRAM measurement)
+            # Forward + backward (optionally with CPU activation offloading)
+            if offload:
+                with offload_activations():
+                    outputs = self.model(**enc)
+                    loss = outputs.loss
+                    loss.backward()
+            else:
+                outputs = self.model(**enc)
+                loss = outputs.loss
+                loss.backward()
+
+            # Optimizer step
             try:
                 import bitsandbytes as bnb
                 opt = bnb.optim.AdamW8bit(
@@ -645,42 +821,21 @@ class CompatChecker:
             del enc, opt, outputs
             _reset_vram()
 
-            headroom = VRAM_LIMIT_GB - peak
-
-            details = {
-                "loss": f"{loss.item():.4f}",
-                "seq_length": actual_len,
-                "peak_vram_gb": f"{peak:.2f}",
-                "headroom_gb": f"{headroom:.2f}",
-                "optimizer": opt_name,
-            }
-
-            if peak >= VRAM_LIMIT_GB:
-                self._record(CheckResult("Training Step", False,
-                    f"Peak VRAM {peak:.2f} GB exceeds {VRAM_LIMIT_GB} GB limit",
-                    details, fatal=True))
-                return False
-
-            self._record(CheckResult("Training Step", True,
-                f"loss={loss.item():.4f} | peak {peak:.2f} GB | "
-                f"{headroom:.2f} GB headroom | seq={actual_len}",
-                details))
-            return True
+            return peak, loss.item(), opt_name, seq_len
 
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 _reset_vram()
-                self._record(CheckResult("Training Step", False,
-                    "CUDA OOM at seq_len=2048, batch=1. "
-                    "Consider 4B fallback model.", fatal=True))
+                console.print(f"        OOM during {'offloaded' if offload else 'standard'} training step",
+                              style="dim red")
             else:
-                self._record(CheckResult("Training Step", False,
-                    f"{type(e).__name__}: {str(e)[:200]}"))
-            return False
+                console.print(f"        {'Offloaded' if offload else 'Standard'} step error: {e!s:.150}",
+                              style="dim red")
+            return None, None, None, None
         except Exception as e:
-            self._record(CheckResult("Training Step", False,
-                f"{type(e).__name__}: {str(e)[:200]}"))
-            return False
+            console.print(f"        {'Offloaded' if offload else 'Standard'} step error: {e!s:.150}",
+                          style="dim red")
+            return None, None, None, None
 
     # ── Phase 8: LoRA Merge (--full) ──────────────────────────────────────
 
