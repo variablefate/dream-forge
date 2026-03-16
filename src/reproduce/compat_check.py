@@ -466,7 +466,7 @@ class CompatChecker:
         registered = len(handles)
 
         try:
-            ids = self.tokenizer("Test", return_tensors="pt").to(self.model.device)
+            ids = self.tokenizer("Test", return_tensors="pt").to(next(self.model.parameters()).device)
             with torch.no_grad():
                 self.model(**ids)
 
@@ -517,7 +517,7 @@ class CompatChecker:
             text = self.tokenizer.apply_chat_template(
                 messages, enable_thinking=False,
                 tokenize=False, add_generation_prompt=True)
-            inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
+            inputs = self.tokenizer(text, return_tensors="pt").to(next(self.model.parameters()).device)
 
             with torch.no_grad():
                 out = self.model.generate(
@@ -784,7 +784,7 @@ class CompatChecker:
             enc = self.tokenizer(
                 dummy, return_tensors="pt",
                 max_length=MAX_SEQ_LENGTH, truncation=True, padding="max_length",
-            ).to(self.model.device)
+            ).to(next(self.model.parameters()).device)
             enc["labels"] = enc["input_ids"].clone()
             seq_len = enc["input_ids"].shape[1]
 

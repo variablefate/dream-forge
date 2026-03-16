@@ -503,7 +503,7 @@ def alpha_sweep(
         for layer_idx, neurons in layer_neurons.items():
             if layer_idx < len(layer_names):
                 mod = dict(model.named_modules())[layer_names[layer_idx]]
-                neuron_tensor = torch.tensor(neurons, device=model.device)
+                neuron_tensor = torch.tensor(neurons, device=next(model.parameters()).device)
 
                 def hook(m, inp, out, nt=neuron_tensor, a=alpha):
                     inp[0][:, :, nt] *= a
