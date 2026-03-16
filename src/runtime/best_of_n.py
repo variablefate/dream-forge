@@ -81,7 +81,9 @@ def extract_cett_for_text(
     module_dict: dict | None = None,
 ) -> np.ndarray:
     """Extract CETT features for a single response. Returns [32*neurons]."""
-    inputs = tokenizer(text, return_tensors="pt").to(next(model.parameters()).device)
+    inputs = tokenizer(
+        text, return_tensors="pt", truncation=True, max_length=2048,
+    ).to(next(model.parameters()).device)
 
     # Reuse pre-built module dict to avoid rebuilding per call
     if module_dict is None:
@@ -277,8 +279,10 @@ class BestOfN:
         if all(r.hallucination_risk > self.hedge_threshold for r in responses):
             # Pick the least-bad one but prepend hedge
             best = min(responses, key=lambda r: r.hallucination_risk)
+            # If best response is empty, hedge prefix alone is meaningless
+            hedge_text = (HEDGE_PREFIX + best.text) if best.text.strip() else ""
             return BestOfNResult(
-                text=HEDGE_PREFIX + best.text,
+                text=hedge_text,
                 confidence=1.0 - best.hallucination_risk,
                 strategy="hedge",
                 n_generated=n,

@@ -294,11 +294,18 @@ def load_training_data(
         prompt_text = tokenizer.apply_chat_template(
             prompt_messages, enable_thinking=False, tokenize=False,
             add_generation_prompt=True)
-        prompt_ids = tokenizer(prompt_text, return_tensors="pt")
+        prompt_ids = tokenizer(
+            prompt_text, truncation=True, max_length=MAX_SEQ_LENGTH,
+            return_tensors="pt")
         prompt_len = prompt_ids["input_ids"].shape[1]
 
         # Set labels to -100 for all prompt tokens (model doesn't learn to predict these)
         labels[:prompt_len] = -100
+
+        # Guard: if prompt consumed all tokens, no response tokens to train on
+        # (CrossEntropyLoss returns NaN when all targets are -100)
+        if (labels != -100).sum() == 0:
+            continue
 
         examples.append({
             "input_ids": input_ids,
