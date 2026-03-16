@@ -387,11 +387,15 @@ def train(config: TrainConfig):
             # Backward
             loss.backward()
 
-            # BPB tracking
-            num_tokens = (targets != -100).sum().item()
-            # Estimate bytes from tokens (approximate: avg ~4 bytes per token for English)
-            num_bytes = num_tokens * 4
-            total_loss += loss.item() * num_tokens
+            # BPB tracking — proper UTF-8 byte counting per autoresearch methodology
+            # BPB = sum(CE_nats) / (ln(2) * sum(utf8_byte_lengths))
+            valid_mask = targets != -100
+            num_tokens = valid_mask.sum().item()
+            # Decode target tokens to text, count actual UTF-8 bytes
+            valid_ids = targets[valid_mask].cpu().tolist()
+            target_text = tokenizer.decode(valid_ids, skip_special_tokens=False)
+            num_bytes = len(target_text.encode("utf-8"))
+            total_loss += loss.item() * num_tokens  # CE in nats, summed
             total_tokens += num_tokens
             total_bytes += num_bytes
 
@@ -425,11 +429,12 @@ def train(config: TrainConfig):
 
             # Logging
             if step % log_interval == 0:
-                avg_loss = total_loss / max(total_tokens, 1)
-                bpb = avg_loss / math.log(2)  # nats to bits, per-token approx
+                avg_loss_per_token = total_loss / max(total_tokens, 1)
+                # Proper BPB: total CE (nats) / (ln(2) * total bytes)
+                bpb = (total_loss / max(total_bytes, 1)) / math.log(2)
                 console.print(
-                    f"  step {step} | loss {loss.item():.4f} | avg_loss {avg_loss:.4f} | "
-                    f"BPB ~{bpb:.3f} | lr {current_lr:.2e} | "
+                    f"  step {step} | loss {loss.item():.4f} | avg {avg_loss_per_token:.4f} | "
+                    f"BPB {bpb:.3f} | lr {current_lr:.2e} | "
                     f"progress {clock.progress:.0%} | epoch {epoch}",
                     style="dim")
 
@@ -443,10 +448,10 @@ def train(config: TrainConfig):
     gc.collect()
 
     # Final stats
-    avg_loss = total_loss / max(total_tokens, 1)
-    bpb = avg_loss / math.log(2)
+    avg_loss_per_token = total_loss / max(total_tokens, 1)
+    bpb = (total_loss / max(total_bytes, 1)) / math.log(2)
     console.print(f"\n  Training complete: {step} steps, {epoch} epochs, "
-                   f"avg_loss={avg_loss:.4f}, BPB~{bpb:.3f}, "
+                   f"avg_loss={avg_loss_per_token:.4f}, BPB={bpb:.3f}, "
                    f"elapsed={clock.elapsed:.0f}s")
 
     # Phase 6: Save
@@ -469,9 +474,10 @@ def train(config: TrainConfig):
         "steps": step,
         "epochs": epoch,
         "budget_minutes": config.budget_minutes,
-        "avg_loss": avg_loss,
+        "avg_loss": avg_loss_per_token,
         "bpb": bpb,
         "total_tokens": total_tokens,
+        "total_bytes": total_bytes,
         "lr": config.lr,
         "wd": config.wd,
         "label_smoothing": config.label_smoothing,
