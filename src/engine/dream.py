@@ -65,9 +65,9 @@ def dream_sample(
     """Generate N high-temp diverse responses to a problem."""
     user_msg = problem
     if error_output:
-        user_msg += f"\n\nError:\n{error_output}"
+        user_msg += f"\n\nError:\n{error_output[:800]}"  # match tune.py truncation
     if context:
-        user_msg += f"\n\nRelevant code:\n{context}"
+        user_msg += f"\n\nRelevant code:{context}"  # no extra \n — match tune.py format
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -77,14 +77,17 @@ def dream_sample(
     prompt = tokenizer.apply_chat_template(
         messages, enable_thinking=False,
         tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
     prompt_len = inputs.input_ids.shape[1]
 
     samples = []
     for i in range(n):
+        # Clone inputs to avoid any in-place mutation from generate()
+        step_inputs = {k: v.clone() for k, v in inputs.items()}
         with torch.no_grad():
             out = model.generate(
-                **inputs,
+                **step_inputs,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_k=50,
@@ -92,6 +95,8 @@ def dream_sample(
                 do_sample=True,
             )
         text = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
+        if not text:
+            continue  # skip empty generations
         samples.append(DreamResult(
             text=text, query=user_msg, temperature=temperature,
             sample_index=i, generator="high_temp",

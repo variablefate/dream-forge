@@ -46,16 +46,34 @@ def create_app(model, tokenizer, bon):
     class CompletionHandler(BaseHTTPRequestHandler):
         def do_POST(self):
             if self.path not in ("/v1/chat/completions", "/chat/completions"):
-                self.send_error(404)
+                self._send_error(404, "Not found")
                 return
 
-            content_len = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(content_len)) if content_len > 0 else {}
+            # Parse body with size limit
+            try:
+                content_len = int(self.headers.get("Content-Length", 0))
+            except (ValueError, TypeError):
+                self._send_error(400, "Invalid Content-Length")
+                return
+
+            if content_len > 1_000_000:  # 1MB limit
+                self._send_error(413, "Request too large")
+                return
+
+            try:
+                body = json.loads(self.rfile.read(content_len)) if content_len > 0 else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_error(400, "Invalid JSON body")
+                return
 
             messages = body.get("messages", [])
-            n_samples = body.get("n_samples", body.get("n", 1))
+            n_samples = min(body.get("n_samples", body.get("n", 1)), 16)  # cap at 16
             temperature = body.get("temperature", 0.7)
-            max_tokens = body.get("max_tokens", 512)
+            max_tokens = min(body.get("max_tokens", 512), 2048)
+
+            # Handle temperature=0 → greedy (OpenAI convention)
+            if temperature == 0:
+                temperature = 0.01  # near-greedy; best_of_n always sets do_sample=True
 
             # Extract the user query (last user message)
             query = ""
@@ -65,7 +83,7 @@ def create_app(model, tokenizer, bon):
                     break
 
             if not query:
-                self._send_json(400, {"error": "No user message found"})
+                self._send_error(400, "No user message found")
                 return
 
             t0 = time.monotonic()
@@ -137,6 +155,16 @@ def create_app(model, tokenizer, bon):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_error(self, code: int, message: str):
+            """Send OpenAI-compatible error response."""
+            self._send_json(code, {
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                }
+            })
+
         def log_message(self, format, *args):
             # Suppress default logging, use Rich instead
             pass
@@ -170,7 +198,7 @@ def main():
 
     # Create and run server
     HTTPServer, Handler = create_app(model, tokenizer, bon)
-    server = HTTPServer(("0.0.0.0", args.port), Handler)
+    server = HTTPServer(("127.0.0.1", args.port), Handler)
 
     console.print(f"\n[bold green]Server running at http://localhost:{args.port}[/bold green]")
     console.print(f"  POST /v1/chat/completions  (OpenAI-compatible)")

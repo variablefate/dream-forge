@@ -36,19 +36,20 @@ def wake_inference(
     problem: str,
     error_output: str | None = None,
     context: str | None = None,
-    temperature: float = 0.1,
+    temperature: float = 0.0,
     max_new_tokens: int = 512,
 ) -> WakeResult:
-    """Generate a single low-temp response to a problem.
+    """Generate a single greedy response to a problem.
 
-    This is what the model "confidently knows" — deterministic, no tricks.
-    The model never sees the reference solution.
+    This is what the model "confidently knows" — deterministic, reproducible.
+    The model never sees the reference solution. Uses greedy decoding (temp=0)
+    for reproducible baselines.
     """
     user_msg = problem
     if error_output:
-        user_msg += f"\n\nError:\n{error_output}"
+        user_msg += f"\n\nError:\n{error_output[:800]}"  # match tune.py truncation
     if context:
-        user_msg += f"\n\nRelevant code:\n{context}"
+        user_msg += f"\n\nRelevant code:{context}"  # no extra \n — match tune.py format
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},

@@ -236,6 +236,17 @@ class EvalSuite:
             ex.response_type = classify_response(prediction)
         self.examples.append(ex)
 
+    def set_bpb(self, ce_nats_sum: float, utf8_bytes_sum: int):
+        """Set BPB from training/eval loss data."""
+        self._bpb = compute_bpb(ce_nats_sum, utf8_bytes_sum)
+
+    def set_pass_at(
+        self, num_correct: list[int], num_samples: list[int],
+        n_values: list[int] = (1, 2, 4),
+    ):
+        """Set pass@N from multi-sample evaluation data."""
+        self._pass_at = compute_pass_at_n(num_correct, num_samples, n_values)
+
     def compute(self) -> EvalReport:
         """Compute all metrics from accumulated examples."""
         if not self.examples:
@@ -285,6 +296,12 @@ class EvalSuite:
             cors = [o for _, o in with_conf]
             report.ece = compute_ece(confs, cors)
             report.brier = compute_brier(confs, cors)
+
+        # Populate BPB and pass@N if set via setter methods
+        if hasattr(self, "_bpb"):
+            report.bpb = self._bpb
+        if hasattr(self, "_pass_at"):
+            report.pass_at = self._pass_at
 
         return report
 

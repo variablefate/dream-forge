@@ -16,8 +16,6 @@ Usage:
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +26,7 @@ if TYPE_CHECKING:
 
 SIMILARITY_CORRECT_THRESHOLD = 0.85
 SIMILARITY_PARTIAL_THRESHOLD = 0.60
+JUDGE_SYSTEM_PROMPT = "You are a careful code reviewer comparing two solutions for equivalence."
 
 
 @dataclass
@@ -51,23 +50,21 @@ def _embedding_similarity(text_a: str, text_b: str) -> float:
 # ── Tier 1a: Executable verification ──────────────────────────────────────────
 
 def _tier_1a_verify(experiment: dict, prediction: str) -> CompareResult | None:
-    """Run tests if available. Returns result or None if no tests."""
-    test_results = experiment.get("test_results")
-    commands = experiment.get("commands_run") or []
+    """Run tests on the prediction if possible. Returns result or None.
 
-    # If experiment has test commands, we could potentially re-run them
-    # For now, check if test_results exist and mark accordingly
-    if test_results is None:
-        return None  # no Tier 1a data available
+    NOTE: Tier 1a requires actually executing the prediction against tests.
+    The original experiment's test_results tell us about the REFERENCE, not
+    the model's prediction. Until code execution is implemented, this always
+    returns None (falling through to Tier 2).
 
-    # If the experiment already has test results, use those as ground truth
-    passed = test_results.get("passed", False)
-    return CompareResult(
-        classification="correct" if passed else "incorrect",
-        tier="tier_1a",
-        confidence=1.0 if passed else 0.9,
-        details={"test_passed": passed, "output": test_results.get("output", "")[:500]},
-    )
+    TODO: Implement code execution to verify predictions against tests.
+    """
+    # Cannot verify the prediction without code execution.
+    # The experiment's test_results are for the reference solution, not
+    # for whatever the model just generated. Returning those would give
+    # every experiment with passing tests a free "correct" regardless of
+    # what the model actually said.
+    return None
 
 
 # ── Tier 1b: Build/lint artifacts ─────────────────────────────────────────────
@@ -115,20 +112,33 @@ def _tier_3_self_judge(
         f"Answer with one word: CORRECT, PARTIAL, or INCORRECT."
     )
 
-    messages = [{"role": "user", "content": judge_prompt}]
+    messages = [
+        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": judge_prompt},
+    ]
     prompt = tokenizer.apply_chat_template(
         messages, enable_thinking=False,
         tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     with torch.no_grad():
         out = model.generate(
             **inputs, max_new_tokens=20,
-            temperature=0.1, do_sample=False,
+            do_sample=False,  # greedy for deterministic judging
         )
 
     response = tokenizer.decode(
         out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip().lower()
+
+    if not response:
+        # Empty judge response — can't classify, return None-like result
+        return CompareResult(
+            classification="partially_correct",
+            tier="tier_3",
+            confidence=0.2,
+            details={"judge_response": "(empty)"},
+        )
 
     if "correct" in response and "incorrect" not in response:
         classification = "correct"
