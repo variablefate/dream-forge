@@ -326,9 +326,29 @@ def extract_activations(
     Uses one representative sample per question (first sample).
     Returns (cett_array [N, 32*neurons], labels [N]).
     """
+    # Precompute per-column weight norms for each down_proj (constant across samples).
+    # Do this once outside the loop to avoid issues with 8-bit Int8Params in hooks.
+    layer_names = sorted([
+        name for name, _ in model.named_modules()
+        if name.endswith("down_proj") and "mlp" in name
+    ])
+    weight_norms: dict[str, torch.Tensor] = {}
+    for name in layer_names:
+        mod = dict(model.named_modules())[name]
+        # Dequantize 8-bit weight to float for norm computation
+        w = mod.weight
+        if hasattr(w, "CB"):  # bitsandbytes Int8Params
+            w_float = w.float()
+        else:
+            w_float = w.float()
+        weight_norms[name] = w_float.norm(dim=0).cpu()  # [neurons]
+
+    num_neurons = weight_norms[layer_names[0]].shape[0]
+    expected_features = len(layer_names) * num_neurons
+    console.print(f"    {len(layer_names)} layers, {num_neurons} neurons each = {expected_features} features", style="dim")
+
     all_cett = []
 
-    # Register hooks to capture down_proj inputs and outputs
     for idx, entry in enumerate(entries):
         sample_text = entry["samples"][0]["text"]  # use first sample
 
@@ -336,24 +356,19 @@ def extract_activations(
         prompt = tokenizer.apply_chat_template(
             messages, enable_thinking=False,
             tokenize=False, add_generation_prompt=True)
-        # Append the model's response for activation extraction
         full_text = prompt + sample_text
 
         inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
 
-        # Collect activations from all down_proj layers
-        layer_activations: dict[str, dict] = {}
+        # Hooks capture only input/output (not weight — precomputed above)
+        layer_io: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         handles = []
 
-        for name, mod in model.named_modules():
-            if name.endswith("down_proj") and "mlp" in name:
-                def hook(m, inp, out, n=name):
-                    layer_activations[n] = {
-                        "input": inp[0].detach(),
-                        "output": out.detach(),
-                        "weight": m.weight.detach(),
-                    }
-                handles.append(mod.register_forward_hook(hook))
+        for name in layer_names:
+            mod = dict(model.named_modules())[name]
+            def hook(m, inp, out, n=name):
+                layer_io[n] = (inp[0].detach(), out.detach())
+            handles.append(mod.register_forward_hook(hook))
 
         with torch.no_grad():
             model(**inputs)
@@ -361,18 +376,30 @@ def extract_activations(
         for h in handles:
             h.remove()
 
-        # Compute CETT per layer, concatenate
+        # Compute CETT per layer using precomputed weight norms
         layer_cetts = []
-        for name in sorted(layer_activations.keys()):
-            data = layer_activations[name]
-            cett = compute_cett(data["input"], data["weight"], data["output"])
-            layer_cetts.append(cett)
+        for name in layer_names:
+            if name not in layer_io:
+                # Layer didn't fire — fill with zeros
+                layer_cetts.append(np.zeros(num_neurons, dtype=np.float32))
+                continue
+            act_input, act_output = layer_io[name]
+            wn = weight_norms[name]
+            # Squeeze batch dim: [1, seq, neurons] -> [seq, neurons]
+            act_in = act_input.squeeze(0).float()   # [seq, 12288]
+            act_out = act_output.squeeze(0).float()  # [seq, 4096]
+            # CETT = (|activations| * weight_norms) / (output_norms + eps), mean over tokens
+            act_abs = act_in.abs()  # [seq, 12288]
+            out_norms = act_out.norm(dim=-1, keepdim=True)  # [seq, 1]
+            cett = (act_abs * wn.to(act_abs.device)) / (out_norms + 1e-8)  # [seq, 12288]
+            layer_cetts.append(cett.mean(dim=0).cpu().numpy())  # [12288]
 
-        if layer_cetts:
-            sample_cett = np.concatenate(layer_cetts)  # [32 * neurons]
-            all_cett.append(sample_cett)
+        sample_cett = np.concatenate(layer_cetts)  # [32 * neurons]
+        assert sample_cett.shape[0] == expected_features, \
+            f"Shape mismatch: {sample_cett.shape[0]} != {expected_features}"
+        all_cett.append(sample_cett)
 
-        layer_activations.clear()
+        layer_io.clear()
 
         if (idx + 1) % 10 == 0:
             console.print(f"    [{idx+1}/{len(entries)}] {label} activations extracted", style="dim")
