@@ -124,7 +124,7 @@ def generate_samples(
             prompt = tokenizer.apply_chat_template(
                 messages, enable_thinking=False,
                 tokenize=False, add_generation_prompt=True)
-            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
             prompt_len = inputs.input_ids.shape[1]
 
             with torch.no_grad():
@@ -253,7 +253,7 @@ def extract_and_save_activations(
             messages, enable_thinking=False,
             tokenize=False, add_generation_prompt=True)
         full_text = prompt + sample_text
-        inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
+        inputs = tokenizer(full_text, return_tensors="pt").to(next(model.parameters()).device)
 
         layer_io: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         handles = []

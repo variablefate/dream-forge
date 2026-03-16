@@ -39,8 +39,8 @@ DEFAULT_N = 4
 DETECTOR_PROBE_PATH = Path("models/detector_probe_pilot.pkl")
 
 
-def create_app(model, tokenizer, bon):
-    """Create the Flask/HTTP app with the completions endpoint."""
+def create_app(model, tokenizer, bon, default_n: int = 1):
+    """Create the HTTP app with the completions endpoint."""
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
     class CompletionHandler(BaseHTTPRequestHandler):
@@ -67,9 +67,11 @@ def create_app(model, tokenizer, bon):
                 return
 
             messages = body.get("messages", [])
-            n_samples = min(body.get("n_samples", body.get("n", 1)), 16)  # cap at 16
+            n_samples = min(body.get("n_samples", body.get("n", default_n)), 16)
             temperature = body.get("temperature", 0.7)
-            max_tokens = min(body.get("max_tokens", 512), 2048)
+            if not isinstance(temperature, (int, float)) or temperature < 0:
+                temperature = 0.7
+            max_tokens = max(1, min(body.get("max_tokens", 512), 2048))
 
             # Handle temperature=0 → greedy (OpenAI convention)
             if temperature == 0:
@@ -86,20 +88,22 @@ def create_app(model, tokenizer, bon):
                 self._send_error(400, "No user message found")
                 return
 
-            t0 = time.monotonic()
+            try:
+                t0 = time.monotonic()
 
-            if n_samples <= 1:
-                # Fast path: single generation, no detector
-                result = bon.generate(
-                    model, tokenizer, query,
-                    n=1, temperature=temperature, max_new_tokens=max_tokens)
-            else:
-                # Best-of-N with detector scoring
-                result = bon.generate(
-                    model, tokenizer, query,
-                    n=n_samples, temperature=temperature, max_new_tokens=max_tokens)
+                if n_samples <= 1:
+                    result = bon.generate(
+                        model, tokenizer, query,
+                        n=1, temperature=temperature, max_new_tokens=max_tokens)
+                else:
+                    result = bon.generate(
+                        model, tokenizer, query,
+                        n=n_samples, temperature=temperature, max_new_tokens=max_tokens)
 
-            elapsed = time.monotonic() - t0
+                elapsed = time.monotonic() - t0
+            except Exception as e:
+                self._send_error(500, f"Inference error: {str(e)[:200]}")
+                return
 
             # OpenAI-compatible response format
             response = {
@@ -145,7 +149,7 @@ def create_app(model, tokenizer, bon):
             elif self.path in ("/health", "/"):
                 self._send_json(200, {"status": "ok", "model": "dream-forge"})
             else:
-                self.send_error(404)
+                self._send_error(404, "Not found")
 
         def _send_json(self, code: int, data: dict):
             body = json.dumps(data).encode("utf-8")
@@ -197,7 +201,7 @@ def main():
     bon = BestOfN.from_pretrained(args.probe)
 
     # Create and run server
-    HTTPServer, Handler = create_app(model, tokenizer, bon)
+    HTTPServer, Handler = create_app(model, tokenizer, bon, default_n=args.n)
     server = HTTPServer(("127.0.0.1", args.port), Handler)
 
     console.print(f"\n[bold green]Server running at http://localhost:{args.port}[/bold green]")

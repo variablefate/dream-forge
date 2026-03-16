@@ -147,7 +147,7 @@ def compute_pass_at_n(
         for k, total in zip(num_correct_per_query, num_samples_per_query):
             if total < n:
                 continue
-            if k >= total:
+            if k >= total or total - k < n:
                 pass_rates.append(1.0)
                 continue
             if k == 0:
@@ -289,8 +289,9 @@ class EvalSuite:
             for domain, exs in by_domain.items()
         }
 
-        # Calibration (only if confidence scores available)
-        with_conf = [(e.confidence, e.correct) for e in self.examples if e.confidence is not None]
+        # Calibration (only if confidence scores available, exclude abstained)
+        with_conf = [(e.confidence, e.correct) for e in self.examples
+                     if e.confidence is not None and e.response_type != "abstain"]
         if len(with_conf) >= 10:
             confs = [c for c, _ in with_conf]
             cors = [o for _, o in with_conf]

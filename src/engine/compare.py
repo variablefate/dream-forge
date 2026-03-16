@@ -19,8 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizer
 
@@ -70,30 +68,15 @@ def _tier_1a_verify(experiment: dict, prediction: str) -> CompareResult | None:
 # ── Tier 1b: Build/lint artifacts ─────────────────────────────────────────────
 
 def _tier_1b_verify(experiment: dict) -> CompareResult | None:
-    """Check build/lint results if available."""
-    build = experiment.get("build_results")
-    lint = experiment.get("lint_results")
+    """Check build/lint results if available.
 
-    if build is None and lint is None:
-        return None
+    NOTE: Same issue as Tier 1a — the experiment's build_results and
+    lint_results are for the REFERENCE solution, not the model's prediction.
+    Until we can build/lint the prediction, this returns None.
 
-    build_ok = build.get("passed", True) if build else True
-    lint_ok = lint.get("passed", True) if lint else True
-
-    if build_ok and lint_ok:
-        return CompareResult(
-            classification="partially_correct",  # build passes but doesn't prove correctness
-            tier="tier_1b",
-            confidence=0.6,
-            details={"build_passed": build_ok, "lint_passed": lint_ok},
-        )
-    else:
-        return CompareResult(
-            classification="incorrect",
-            tier="tier_1b",
-            confidence=0.7,
-            details={"build_passed": build_ok, "lint_passed": lint_ok},
-        )
+    TODO: Implement prediction build/lint verification.
+    """
+    return None
 
 
 # ── Tier 3: Qwen self-judge ───────────────────────────────────────────────────

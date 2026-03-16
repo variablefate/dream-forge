@@ -160,7 +160,6 @@ def _dream_counterfactual(
 ) -> DreamCloud:
     """Change one constraint, see if model adapts or hallucinates the old answer."""
     problem = experiment.get("problem", "")
-    reference = experiment.get("reference_solution", "")
 
     counterfactual_prompt = (
         f"Here is a problem that was previously solved:\n\n"

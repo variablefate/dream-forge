@@ -92,7 +92,8 @@ class WallClockCallback:
         if self.step_count <= WARMUP_STEPS:
             if self.step_count == WARMUP_STEPS:
                 self._warmup_done = True
-                torch.cuda.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
             return False
 
         self.elapsed += step_time
