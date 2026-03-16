@@ -13,7 +13,9 @@ Autoresearch enhancements (leaderboard-validated):
   6. Warmdown ratio 0.4-0.5
   7. Final LR fraction 0.005
   8. Linear WD decay schedule
-  9. BPB metric logging
+  9. BPB metric logging (NOTE: label_smoothing inflates absolute BPB by
+     ~1.7 bits/byte. Relative comparisons between runs with same smoothing
+     are valid. Subtract bias when comparing to literature values.)
 
 Run:
     uv run python -m src.engine.tune --data experiments/ --budget 5
@@ -147,6 +149,10 @@ def cautious_weight_decay_step(
 
     Cautious: only decay where gradient agrees with parameter sign.
     Linear schedule: WD * (1 - progress) — decay WD itself over training.
+
+    NOTE: Uses raw gradient for the sign check, not Adam's momentum-corrected
+    update direction. This is an approximation that diverges as momentum builds.
+    Acceptable for LoRA (short training, low momentum accumulation).
     """
     effective_wd = wd * (1.0 - progress)
     if effective_wd <= 0:
@@ -182,7 +188,9 @@ class ResidualScalars(torch.nn.Module):
         layers = []
         for name, mod in model.named_modules():
             if hasattr(mod, "linear_attn") or hasattr(mod, "self_attn"):
-                if "layers." in name and name.count(".") <= 4:
+                # Match decoder layers regardless of PEFT wrapper depth
+                # (base_model.model.model.language_model.layers.0 has 6+ dots)
+                if "layers." in name and name.endswith(tuple(f"layers.{i}" for i in range(64))):
                     layers.append((name, mod))
 
         if not layers:
@@ -368,9 +376,12 @@ def train(config: TrainConfig):
     console.print(f"\n[bold cyan]Phase 5: Training ({config.budget_minutes}m wall-clock)[/bold cyan]")
 
     clock = WallClockCallback(config.budget_minutes)
+    # ignore_index MUST be -100 to match the label masking (line ~292 sets
+    # prompt tokens to -100). Using pad_token_id would crash because pad=eos
+    # and -100 is out-of-range for that ignore_index.
     loss_fn = torch.nn.CrossEntropyLoss(
         label_smoothing=config.label_smoothing,
-        ignore_index=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else -100,
+        ignore_index=-100,
     )
 
     model.train()
@@ -391,9 +402,10 @@ def train(config: TrainConfig):
 
         for idx in indices:
             example = examples[idx]
-            input_ids = example["input_ids"].unsqueeze(0).to(model.device)
-            attention_mask = example["attention_mask"].unsqueeze(0).to(model.device)
-            labels = example["labels"].unsqueeze(0).to(model.device)
+            device = next(model.parameters()).device
+            input_ids = example["input_ids"].unsqueeze(0).to(device)
+            attention_mask = example["attention_mask"].unsqueeze(0).to(device)
+            labels = example["labels"].unsqueeze(0).to(device)
 
             clock.on_step_begin()
 

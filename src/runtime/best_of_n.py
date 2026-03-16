@@ -78,15 +78,20 @@ def extract_cett_for_text(
     layer_names: list[str],
     weight_norms: dict[str, torch.Tensor],
     num_neurons: int,
+    module_dict: dict | None = None,
 ) -> np.ndarray:
     """Extract CETT features for a single response. Returns [32*neurons]."""
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+    # Reuse pre-built module dict to avoid rebuilding per call
+    if module_dict is None:
+        module_dict = dict(model.named_modules())
 
     layer_io: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
     handles = []
 
     for name in layer_names:
-        mod = dict(model.named_modules())[name]
+        mod = module_dict[name]
         def hook(m, inp, out, n=name):
             layer_io[n] = (inp[0].detach(), out.detach())
         handles.append(mod.register_forward_hook(hook))
@@ -111,6 +116,7 @@ def extract_cett_for_text(
         cett = (act_abs * wn) / (out_norms + 1e-8)
         layer_cetts.append(cett.mean(dim=0).cpu().numpy())
 
+    layer_io.clear()  # release GPU tensors promptly
     return np.concatenate(layer_cetts)
 
 
@@ -140,17 +146,20 @@ class BestOfN:
         return cls(detector_probe=probe, **kwargs)
 
     def _init_hooks(self, model):
-        """Lazily initialize layer names and weight norms from the model."""
+        """Lazily initialize layer names, weight norms, and module dict from the model."""
         if self._layer_names is not None:
             return
 
+        # Build module dict once — reused for all subsequent CETT extractions
+        self._module_dict = dict(model.named_modules())
+
         self._layer_names = sorted([
-            name for name, _ in model.named_modules()
+            name for name in self._module_dict
             if name.endswith("down_proj") and "mlp" in name
         ])
         self._weight_norms = {}
         for name in self._layer_names:
-            mod = dict(model.named_modules())[name]
+            mod = self._module_dict[name]
             self._weight_norms[name] = mod.weight.float().norm(dim=0).cpu()
 
         self._num_neurons = self._weight_norms[self._layer_names[0]].shape[0]
@@ -173,7 +182,8 @@ class BestOfN:
 
         features = extract_cett_for_text(
             model, tokenizer, full_text,
-            self._layer_names, self._weight_norms, self._num_neurons)
+            self._layer_names, self._weight_norms, self._num_neurons,
+            module_dict=self._module_dict)
 
         # Detector: P(hallucinated) is class 1
         proba = self.probe.predict_proba(features.reshape(1, -1))[0]
@@ -213,6 +223,10 @@ class BestOfN:
         responses: list[ScoredResponse] = []
         for i in range(n):
             text = self._generate_one(model, tokenizer, query, temperature, max_new_tokens)
+            if not text.strip():
+                # Empty generation — assign max risk so it's never selected
+                responses.append(ScoredResponse(text="", hallucination_risk=1.0))
+                continue
             scored = self.score_response(model, tokenizer, query, text)
             responses.append(scored)
 
@@ -275,16 +289,17 @@ class BestOfN:
         if len(ranked) >= 2:
             score_gap = ranked[1].hallucination_risk - ranked[0].hallucination_risk
             if score_gap < 0.05:
-                # Scores are close — prefer the most common answer
+                # Scores are close — prefer the most common answer (if any agreement exists)
                 texts = [r.text.strip().lower()[:100] for r in responses]
                 counts = Counter(texts)
-                most_common_text = counts.most_common(1)[0][0]
+                most_common_text, most_common_count = counts.most_common(1)[0]
 
-                for r in ranked:
-                    if r.text.strip().lower()[:100] == most_common_text:
-                        best = r
-                        strategy = "consistency"
-                        break
+                if most_common_count >= 2:  # actual consistency required
+                    for r in ranked:
+                        if r.text.strip().lower()[:100] == most_common_text:
+                            best = r
+                            strategy = "consistency"
+                            break
 
         return BestOfNResult(
             text=best.text,
@@ -342,7 +357,8 @@ def main():
     if len(result.all_responses) > 1:
         console.print(f"\n[dim]All {result.n_generated} responses:[/dim]")
         for i, r in enumerate(sorted(result.all_responses, key=lambda x: x.hallucination_risk)):
-            marker = " <-- selected" if r.text == result.text.removeprefix(HEDGE_PREFIX) else ""
+            is_selected = (r.text == result.text) or (result.hedged and r.text in result.text)
+            marker = " <-- selected" if is_selected else ""
             console.print(f"  [{i+1}] risk={r.hallucination_risk:.3f} | "
                            f"{r.text[:80]}...{marker}", style="dim")
 
