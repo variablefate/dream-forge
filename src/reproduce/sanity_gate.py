@@ -222,8 +222,10 @@ def generate_samples(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    console.print(f"  Generating {SAMPLES_PER_QUESTION} samples each for {len(remaining)} questions...")
+    console.print(f"  Generating {SAMPLES_PER_QUESTION} samples each for {len(remaining)} questions "
+                   f"(batched via num_return_sequences)...")
 
+    t_start = time.monotonic()
     with open(cache_file, "a", encoding="utf-8") as f:
         for i, q in enumerate(remaining):
             messages = [{"role": "user", "content": q["question"]}]
@@ -231,21 +233,24 @@ def generate_samples(
                 messages, enable_thinking=False,
                 tokenize=False, add_generation_prompt=True)
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            prompt_len = inputs.input_ids.shape[1]
+
+            # Generate all samples in one call — shares prompt encoding + KV cache
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=MAX_NEW_TOKENS,
+                    temperature=1.0,
+                    top_k=50,
+                    top_p=0.9,
+                    do_sample=True,
+                    num_return_sequences=SAMPLES_PER_QUESTION,
+                )
 
             samples = []
-            for _ in range(SAMPLES_PER_QUESTION):
-                with torch.no_grad():
-                    out = model.generate(
-                        **inputs,
-                        max_new_tokens=MAX_NEW_TOKENS,
-                        temperature=1.0,
-                        top_k=50,
-                        top_p=0.9,
-                        do_sample=True,
-                    )
+            for seq in outputs:
                 text = tokenizer.decode(
-                    out[0][inputs.input_ids.shape[1]:],
-                    skip_special_tokens=True).strip()
+                    seq[prompt_len:], skip_special_tokens=True).strip()
                 correct = judge_answer(text, q["aliases"])
                 samples.append({"text": text, "correct": correct})
 
@@ -261,9 +266,13 @@ def generate_samples(
             cached[q["question_id"]] = entry
 
             if (i + 1) % 10 == 0:
+                elapsed = time.monotonic() - t_start
+                per_q = elapsed / (i + 1)
+                eta = per_q * (len(remaining) - i - 1)
                 console.print(
                     f"    [{i+1}/{len(remaining)}] "
-                    f"Last: {entry['num_correct']}/{SAMPLES_PER_QUESTION} correct",
+                    f"{entry['num_correct']}/{SAMPLES_PER_QUESTION} correct | "
+                    f"{per_q:.1f}s/q | ETA {eta/60:.0f}m",
                     style="dim")
 
     return list(cached.values())
