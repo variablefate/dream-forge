@@ -213,7 +213,10 @@ class BestOfN:
         # Pass@1 fast path
         if n <= 1:
             text = self._generate_one(model, tokenizer, query, temperature, max_new_tokens)
-            scored = self.score_response(model, tokenizer, query, text)
+            if not text.strip():
+                scored = ScoredResponse(text="", hallucination_risk=1.0)
+            else:
+                scored = self.score_response(model, tokenizer, query, text)
             return BestOfNResult(
                 text=scored.text,
                 confidence=1.0 - scored.hallucination_risk,
@@ -252,11 +255,13 @@ class BestOfN:
         inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
         prompt_len = inputs.input_ids.shape[1]
 
+        # Guard: do_sample=True requires temperature > 0
+        safe_temp = max(temperature, 0.1)
         with torch.no_grad():
             out = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
+                temperature=safe_temp,
                 top_p=0.9,
                 do_sample=True,
             )

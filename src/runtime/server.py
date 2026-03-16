@@ -74,7 +74,10 @@ def create_app(model, tokenizer, bon, default_n: int = 1):
             temperature = body.get("temperature", 0.7)
             if not isinstance(temperature, (int, float)) or temperature < 0:
                 temperature = 0.7
-            max_tokens = max(1, min(body.get("max_tokens", 512), 2048))
+            try:
+                max_tokens = max(1, min(int(body.get("max_tokens", 512)), 2048))
+            except (TypeError, ValueError):
+                max_tokens = 512
 
             # Handle temperature=0 → greedy (OpenAI convention)
             if temperature == 0:
