@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Data (large, local-only)
+data/
+models/
+corrections/
+*.gguf
+*.safetensors
+
+# Experiments (personal workflow data)
+experiments/
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# UV
+uv.lock
