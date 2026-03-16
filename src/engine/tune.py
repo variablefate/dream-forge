@@ -48,7 +48,10 @@ MAX_SEQ_LENGTH = 2048
 DEFAULT_LR = 2e-4
 DEFAULT_WD = 0.01
 LABEL_SMOOTHING = 0.1
-WARMDOWN_RATIO = 0.45        # 45% of training time in LR decay
+WARMDOWN_RATIO = 0.45        # 45% of training time in LR decay (default for LoRA)
+                              # autoresearch@home swarm found 1.0 optimal for from-scratch training
+                              # but hyperparams interact: FINAL_LR_FRAC=0.03 + WARMDOWN=1.0 REGRESSED
+                              # Test both 0.45 and 1.0 in ablation — don't assume transferability
 FINAL_LR_FRACTION = 0.005    # don't decay to exactly 0
 GC_COLLECT_INTERVAL = 5000   # manual gc.collect() every N steps
 WARMUP_STEPS = 5             # skip from wall-clock budget (torch.compile warmup)
@@ -286,6 +289,7 @@ class TrainConfig:
     budget_minutes: float = 5.0
     lr: float = DEFAULT_LR
     wd: float = DEFAULT_WD
+    warmdown_ratio: float = WARMDOWN_RATIO
     label_smoothing: float = LABEL_SMOOTHING
     output_dir: Path = Path("models/lora_adapter")
     production: bool = False
@@ -400,7 +404,7 @@ def train(config: TrainConfig):
             total_bytes += num_bytes
 
             # Optimizer step with cautious WD
-            current_lr = get_lr(clock.progress, config.lr)
+            current_lr = get_lr(clock.progress, config.lr, warmdown_ratio=config.warmdown_ratio)
             for pg in optimizer.param_groups:
                 base_lr = pg.get("lr", config.lr)
                 # Scale by progress-proportional LR
@@ -481,7 +485,7 @@ def train(config: TrainConfig):
         "lr": config.lr,
         "wd": config.wd,
         "label_smoothing": config.label_smoothing,
-        "warmdown_ratio": WARMDOWN_RATIO,
+        "warmdown_ratio": config.warmdown_ratio,
         "final_lr_fraction": FINAL_LR_FRACTION,
         "num_examples": len(examples),
         "enhancements": [
@@ -520,6 +524,10 @@ def main():
                         help=f"Base learning rate (default: {DEFAULT_LR})")
     parser.add_argument("--wd", type=float, default=DEFAULT_WD,
                         help=f"Weight decay (default: {DEFAULT_WD})")
+    parser.add_argument("--warmdown", type=float, default=WARMDOWN_RATIO,
+                        help=f"Warmdown ratio 0-1 (default: {WARMDOWN_RATIO}). "
+                             f"autoresearch@home swarm found 1.0 optimal for from-scratch, "
+                             f"but interacts with final_lr — test both in ablation")
     parser.add_argument("--output", type=Path, default=Path("models/lora_adapter"),
                         help="Output directory for adapter")
     parser.add_argument("--production", action="store_true",
@@ -533,6 +541,7 @@ def main():
         budget_minutes=budget,
         lr=args.lr,
         wd=args.wd,
+        warmdown_ratio=args.warmdown,
         output_dir=args.output,
     )
 
