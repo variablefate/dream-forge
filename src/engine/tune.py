@@ -26,6 +26,7 @@ import argparse
 import gc
 import json
 import math
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -250,12 +251,12 @@ def load_training_data(
 
         context_text = ""
         for cf in context_files[:3]:  # max 3 context files
-            context_text += f"\n### {cf.get('path', 'file')}\n{cf.get('content', '')[:500]}\n"
+            context_text += f"\n### {cf.get('path', 'file')}\n{cf.get('content', '')[:2000]}\n"
 
         system_msg = "You are a helpful coding assistant. Solve the problem accurately."
         user_msg = problem
         if error_output:
-            user_msg += f"\n\nError:\n{error_output[:300]}"
+            user_msg += f"\n\nError:\n{error_output[:800]}"
         if context_text:
             user_msg += f"\n\nRelevant code:{context_text}"
 
@@ -265,16 +266,35 @@ def load_training_data(
             {"role": "assistant", "content": exp["reference_solution"]},
         ]
 
+        # Tokenize full conversation
         text = tokenizer.apply_chat_template(
             messages, enable_thinking=False, tokenize=False)
         encoded = tokenizer(
             text, truncation=True, max_length=MAX_SEQ_LENGTH,
             return_tensors="pt")
 
+        input_ids = encoded["input_ids"].squeeze(0)
+        labels = input_ids.clone()
+
+        # Mask labels for non-assistant tokens (only train on the response)
+        # Tokenize prompt-only (system + user) to find where assistant starts
+        prompt_messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+        prompt_text = tokenizer.apply_chat_template(
+            prompt_messages, enable_thinking=False, tokenize=False,
+            add_generation_prompt=True)
+        prompt_ids = tokenizer(prompt_text, return_tensors="pt")
+        prompt_len = prompt_ids["input_ids"].shape[1]
+
+        # Set labels to -100 for all prompt tokens (model doesn't learn to predict these)
+        labels[:prompt_len] = -100
+
         examples.append({
-            "input_ids": encoded["input_ids"].squeeze(0),
+            "input_ids": input_ids,
             "attention_mask": encoded["attention_mask"].squeeze(0),
-            "labels": encoded["input_ids"].squeeze(0).clone(),
+            "labels": labels,
             "source_file": json_file.name,
         })
 
@@ -308,7 +328,7 @@ def train(config: TrainConfig):
     # Phase 2: Setup residual scalars
     console.print("\n[bold cyan]Phase 2: Residual Scalars[/bold cyan]")
     residual_scalars = ResidualScalars(num_layers=32)
-    residual_scalars.to(model.device if hasattr(model, 'device') else 'cuda')
+    residual_scalars.to(next(model.parameters()).device)
     residual_scalars.register_hooks(model)
 
     # Phase 3: Load data
@@ -339,6 +359,9 @@ def train(config: TrainConfig):
         {"params": lora_params, "lr": config.lr, "weight_decay": 0.0},  # WD applied manually (cautious)
         {"params": scalar_params, "lr": config.lr / 100, "weight_decay": 0.0},
     ])
+    # Store original LRs — must scale from these each step, NOT from pg["lr"]
+    # (reading back pg["lr"] after modification causes exponential LR decay bug)
+    original_lrs = [pg["lr"] for pg in optimizer.param_groups]
     console.print(f"  {opt_name} | LoRA lr={config.lr}, scalar lr={config.lr/100}")
 
     # Phase 5: Training loop
@@ -359,12 +382,12 @@ def train(config: TrainConfig):
     log_interval = 10
     should_stop = False
 
+    rng = random.Random(42)  # reproducible shuffle across runs
+
     while not should_stop:
         epoch += 1
-        # Shuffle examples each epoch
-        import random
         indices = list(range(len(examples)))
-        random.shuffle(indices)
+        rng.shuffle(indices)
 
         for idx in indices:
             example = examples[idx]
@@ -405,11 +428,9 @@ def train(config: TrainConfig):
 
             # Optimizer step with cautious WD
             current_lr = get_lr(clock.progress, config.lr, warmdown_ratio=config.warmdown_ratio)
-            for pg in optimizer.param_groups:
-                base_lr = pg.get("lr", config.lr)
-                # Scale by progress-proportional LR
-                scale = current_lr / config.lr if config.lr > 0 else 1.0
-                pg["lr"] = base_lr * scale if pg is optimizer.param_groups[0] else (base_lr * scale)
+            lr_scale = current_lr / config.lr if config.lr > 0 else 1.0
+            for pg, orig_lr in zip(optimizer.param_groups, original_lrs):
+                pg["lr"] = orig_lr * lr_scale
 
             optimizer.step()
 

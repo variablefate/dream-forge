@@ -73,8 +73,8 @@ def _swap_tokenizer_and_cleanup(model) -> tuple[bool, "PreTrainedTokenizer"]:
             del model.visual
         elif hasattr(model, "model") and hasattr(model.model, "visual"):
             del model.model.visual
-        torch.cuda.empty_cache()
-        gc.collect()
+        gc.collect()  # free Python objects holding CUDA tensors first
+        torch.cuda.empty_cache()  # then release CUDA memory
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

@@ -42,6 +42,9 @@ DEFAULT_TEMPERATURE = 0.7
 MAX_NEW_TOKENS = 512
 DETECTOR_PROBE_PATH = Path("models/detector_probe_pilot.pkl")
 
+# Must match the system prompt used during training (tune.py)
+SYSTEM_PROMPT = "You are a helpful coding assistant. Solve the problem accurately."
+
 HEDGE_PREFIX = (
     "I'm not fully confident in this answer. "
     "Here's my best attempt, but please verify: "
@@ -159,7 +162,10 @@ class BestOfN:
         self._init_hooks(model)
 
         # Build full text (query + response) for activation extraction
-        messages = [{"role": "user", "content": query}]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": query},
+        ]
         prompt = tokenizer.apply_chat_template(
             messages, enable_thinking=False,
             tokenize=False, add_generation_prompt=True)
@@ -218,7 +224,10 @@ class BestOfN:
         temperature: float, max_new_tokens: int,
     ) -> str:
         """Generate a single response."""
-        messages = [{"role": "user", "content": query}]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": query},
+        ]
         prompt = tokenizer.apply_chat_template(
             messages, enable_thinking=False,
             tokenize=False, add_generation_prompt=True)
