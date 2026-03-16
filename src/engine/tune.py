@@ -394,6 +394,7 @@ def train(config: TrainConfig):
     should_stop = False
 
     rng = random.Random(42)  # reproducible shuffle across runs
+    device = next(model.parameters()).device
 
     while not should_stop:
         epoch += 1
@@ -402,7 +403,6 @@ def train(config: TrainConfig):
 
         for idx in indices:
             example = examples[idx]
-            device = next(model.parameters()).device
             input_ids = example["input_ids"].unsqueeze(0).to(device)
             attention_mask = example["attention_mask"].unsqueeze(0).to(device)
             labels = example["labels"].unsqueeze(0).to(device)
