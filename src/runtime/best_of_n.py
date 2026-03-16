@@ -162,6 +162,10 @@ class BestOfN:
             mod = self._module_dict[name]
             self._weight_norms[name] = mod.weight.float().norm(dim=0).cpu()
 
+        if not self._layer_names:
+            raise ValueError(
+                "No down_proj MLP layers found in model. "
+                "Check model architecture or PEFT wrapper.")
         self._num_neurons = self._weight_norms[self._layer_names[0]].shape[0]
 
     def score_response(
@@ -170,9 +174,9 @@ class BestOfN:
         """Score a single response with the detector probe."""
         self._init_hooks(model)
 
-        # Build full text (query + response) for activation extraction
+        # Build full text for CETT extraction — user-only messages (no system prompt)
+        # to match the probe's training data format (sanity_gate uses user-only)
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": query},
         ]
         prompt = tokenizer.apply_chat_template(

@@ -15,7 +15,6 @@ Usage:
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -85,11 +84,14 @@ def dream_sample(
     for i in range(n):
         # Clone inputs to avoid any in-place mutation from generate()
         step_inputs = {k: v.clone() for k, v in inputs.items()}
+        # Clamp temperature to min 0.1 — dream phase must always sample
+        # (do_sample=True + temperature=0 crashes HuggingFace generate)
+        safe_temp = max(temperature, 0.1)
         with torch.no_grad():
             out = model.generate(
                 **step_inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
+                temperature=safe_temp,
                 top_k=50,
                 top_p=0.9,
                 do_sample=True,

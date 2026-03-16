@@ -123,12 +123,15 @@ def _tier_3_self_judge(
             details={"judge_response": "(empty)"},
         )
 
-    if "correct" in response and "incorrect" not in response:
-        classification = "correct"
-        confidence = 0.4
+    if "incorrect" in response:
+        classification = "incorrect"
+        confidence = 0.3
     elif "partial" in response:
         classification = "partially_correct"
         confidence = 0.3
+    elif "correct" in response:
+        classification = "correct"
+        confidence = 0.4
     else:
         classification = "incorrect"
         confidence = 0.3
@@ -156,6 +159,16 @@ def compare_outputs(
     Tries tiers in order (strongest first), returns the first available result.
     Tier 2 (embedding similarity) is always computed as a baseline.
     """
+    # Guard: empty prediction or reference means we can't compare meaningfully
+    if not prediction or not prediction.strip():
+        return CompareResult(
+            classification="incorrect", tier="tier_2", confidence=0.0,
+            details={"error": "empty prediction"})
+    if not reference or not reference.strip():
+        return CompareResult(
+            classification="partially_correct", tier="tier_2", confidence=0.0,
+            details={"error": "empty reference"})
+
     # Tier 1a: executable verification
     t1a = _tier_1a_verify(experiment, prediction)
     if t1a is not None:

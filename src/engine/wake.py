@@ -74,10 +74,10 @@ def wake_inference(
     text = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
 
     return WakeResult(
-        text=text,
+        text=text if text else "(empty generation)",
         query=user_msg,
         temperature=temperature,
-        num_tokens=out.shape[1] - prompt_len,
+        num_tokens=max(0, out.shape[1] - prompt_len),
     )
 
 

@@ -67,7 +67,10 @@ def create_app(model, tokenizer, bon, default_n: int = 1):
                 return
 
             messages = body.get("messages", [])
-            n_samples = min(body.get("n_samples", body.get("n", default_n)), 16)
+            try:
+                n_samples = max(1, min(int(body.get("n_samples", body.get("n", default_n))), 16))
+            except (TypeError, ValueError):
+                n_samples = default_n
             temperature = body.get("temperature", 0.7)
             if not isinstance(temperature, (int, float)) or temperature < 0:
                 temperature = 0.7
