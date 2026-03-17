@@ -163,44 +163,48 @@ def qwen_extract(
 def deterministic_extract(moment: dict) -> dict | None:
     """Extract code using git + function name — no model needed.
 
-    Works when the moment has a specific function name and commit hash.
+    Uses commit_before (buggy version) and commit_after (fixed version).
     Returns {before_code, after_code} or None if extraction fails.
     """
-    commit = moment.get("commit", "")
+    # Drop non-extractable moments immediately
+    if not moment.get("extractable", True):
+        return None
+
+    commit_after = moment.get("commit_after", moment.get("commit", ""))
+    commit_before = moment.get("commit_before", "")
     files = moment.get("files", [])
     function_name = moment.get("function", "")
 
-    if not commit or not files:
+    if not commit_after or not files:
         return None
 
-    # Try to extract the function before and after the commit
     primary_file = files[0]
 
-    before_content = get_file_before_commit(primary_file, commit)
-    after_content = get_file_at_commit(primary_file, commit)
-
+    # Get the after (fixed) version
+    after_content = get_file_at_commit(primary_file, commit_after)
     if not after_content:
+        return None
+
+    # Get the before (buggy) version
+    if commit_before:
+        before_content = get_file_at_commit(primary_file, commit_before)
+    else:
+        # Fall back to parent of commit_after
+        before_content = get_file_before_commit(primary_file, commit_after)
+
+    # If before doesn't exist, the file was created in commit_after — not extractable
+    if not before_content:
         return None
 
     if function_name:
         before_code = extract_function_from_file(before_content, function_name)
         after_code = extract_function_from_file(after_content, function_name)
     else:
-        # No function name — use the diff itself as context
-        diff = get_commit_diff(commit)
-        # Limit to the relevant file's portion of the diff
-        file_diff_lines = []
-        in_file = False
-        for line in diff.split("\n"):
-            if line.startswith("diff --git"):
-                in_file = any(f in line for f in files)
-            if in_file:
-                file_diff_lines.append(line)
-        before_code = "\n".join(file_diff_lines[:100])
-        after_code = before_code  # diff serves as both context and solution
-        return None  # can't cleanly separate without function name
+        # No function name — can't cleanly separate
+        return None
 
-    if not after_code:
+    # Both before and after must have real code
+    if not before_code or not after_code:
         return None
 
     return {
@@ -240,7 +244,7 @@ def build_experiment(
             {
                 "path": primary_file,
                 "content": before_code,
-                "revision": moment.get("commit", ""),
+                "revision": moment.get("commit_before", moment.get("commit", "")),
                 "provenance": "retrieved_pre",
             }
         ] if before_code else None,
@@ -322,10 +326,17 @@ def process_session(
                 f"  [green]OK[/green] [{moment.get('difficulty', '?')}] "
                 f"{moment.get('task_group_id', '?')} — deterministic extraction")
         else:
-            needs_model.append(moment)
-            console.print(
-                f"  [yellow]PENDING[/yellow] [{moment.get('difficulty', '?')}] "
-                f"{moment.get('task_group_id', '?')} — needs model extraction")
+            # Check if explicitly marked non-extractable — drop it
+            if not moment.get("extractable", True):
+                console.print(
+                    f"  [red]DROPPED[/red] [{moment.get('difficulty', '?')}] "
+                    f"{moment.get('task_group_id', '?')} — marked non-extractable "
+                    f"(no before version in git)")
+            else:
+                needs_model.append(moment)
+                console.print(
+                    f"  [yellow]PENDING[/yellow] [{moment.get('difficulty', '?')}] "
+                    f"{moment.get('task_group_id', '?')} — needs model extraction")
 
     # Use Qwen for remaining moments (if requested and needed)
     if needs_model and use_model:

@@ -58,9 +58,14 @@ Each moment needs enough context for a 9B model to understand it. Write:
 - **why_hard** or **why_easy**: 1-2 sentences explaining the rating. "No error — silent data loss. Required tracing through the full filtering pipeline."
 - **files**: Which files are involved (list of paths)
 - **function**: The specific function/class/block name if applicable
-- **commit**: The commit hash that contains the fix (or closest)
+- **commit_before**: The commit hash where the buggy/old code exists (BEFORE the fix). This is the version the model sees as input context.
+- **commit_after**: The commit hash where the fix exists (AFTER the fix). This is the version the model learns to produce.
+- **extractable**: `true` if both before and after versions exist in git. Set to `false` if the file was created in the same commit as the fix (no before version in git) or if the moment can't be reconstructed from commits alone. **Moments marked `false` will be dropped by the splitter.**
 - **tags**: Domain tags (python, machine-learning, config, etc.)
 - **task_group_id**: Kebab-case group ID. Moments from the same logical task share a group.
+
+**How to find commit_before vs commit_after:**
+Run `git log --oneline -- <file>` to see the commit history. If the fix spans two commits (e.g., file created in commit A, bug fixed in commit B), use A as commit_before and B as commit_after. If the buggy code and fix are in the SAME commit (file was created with the fix already applied), mark `extractable: false` — there's no before version in git to extract.
 
 **Difficulty guidelines:**
 - **hard**: Required debugging, research, or domain knowledge. Subtle bugs (wrong results, not crashes). Multiple approaches considered. External review needed. A 9B model would likely get this wrong.
@@ -86,7 +91,9 @@ Write a single JSON file with all moments:
       "why_hard": "<explanation>",
       "files": ["src/engine/data_prep.py"],
       "function": "apply_domain_cap",
-      "commit": "<hash>",
+      "commit_before": "<hash where buggy code exists>",
+      "commit_after": "<hash where fix exists>",
+      "extractable": true,
       "tags": ["python", "data-pipeline"],
       "task_group_id": "domain-cap-cold-start"
     }
