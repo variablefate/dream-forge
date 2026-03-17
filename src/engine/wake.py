@@ -85,7 +85,9 @@ def wake_from_experiment(model, tokenizer, experiment: dict, **kwargs) -> WakeRe
     """Convenience wrapper that extracts fields from an experiment dict."""
     context_text = ""
     for cf in (experiment.get("pre_solution_context") or [])[:3]:
-        context_text += f"\n### {cf.get('path', 'file')}\n{cf.get('content', '')[:2000]}\n"
+        path = cf.get("path", "file") if isinstance(cf, dict) else "file"
+        content = cf.get("content", "") if isinstance(cf, dict) else ""
+        context_text += f"\n### {path}\n{content[:2000]}\n"
 
     return wake_inference(
         model, tokenizer,

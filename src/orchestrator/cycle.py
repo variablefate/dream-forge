@@ -373,6 +373,9 @@ def run_cycle(config: CycleConfig) -> CycleResult:
     staging_dir: Path | None = None
 
     if not config.dry_run:
+        # Ensure output directory exists for eval saves + cycle result
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+
         # --------------------------------------------------------------
         # Step 7 — FREE MODEL + DATA PREP + STAGING
         # --------------------------------------------------------------

@@ -373,5 +373,5 @@ class EvalSuite:
         if report.pass_at:
             data["pass_at"] = {str(k): v for k, v in report.pass_at.items()}
 
-        Path(path).write_text(json.dumps(data, indent=2))
+        Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
         console.print(f"Report saved to [bold]{path}[/bold]")
