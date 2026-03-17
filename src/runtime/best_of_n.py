@@ -10,7 +10,7 @@ This is the core runtime feature for the detector-only path (C.8).
 
 Usage as library:
     from src.runtime.best_of_n import BestOfN
-    bon = BestOfN.from_pretrained("models/detector_probe_pilot.pkl")
+    bon = BestOfN.from_pretrained("models/detector_probe.pkl")
     result = bon.generate(model, tokenizer, "What is Python's GIL?", n=4)
     print(result.text, result.confidence, result.strategy)
 
@@ -40,7 +40,7 @@ DEFAULT_N = 4
 DEFAULT_HEDGE_THRESHOLD = 0.7  # if all samples score above this, hedge
 DEFAULT_TEMPERATURE = 0.7
 MAX_NEW_TOKENS = 512
-DETECTOR_PROBE_PATH = Path("models/detector_probe_pilot.pkl")
+DETECTOR_PROBE_PATH = Path("models/detector_probe.pkl")
 
 # Must match the system prompt used during training (tune.py)
 SYSTEM_PROMPT = "You are a helpful coding assistant. Solve the problem accurately."

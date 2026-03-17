@@ -67,7 +67,7 @@ class CycleConfig:
     min_training_examples: int = 10
     output_dir: Path = Path("data/cycle_results")
     adapter_dir: Path = Path("models/lora_adapter")
-    probe_path: Path = Path("models/detector_probe_pilot.pkl")
+    probe_path: Path = Path("models/detector_probe.pkl")
     abstain_mix_ratio: float = 0.10
     abstain_max_rate: float = 0.15
 
@@ -599,7 +599,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("data/cycle_results"))
     parser.add_argument("--adapter-dir", type=Path, default=Path("models/lora_adapter"))
     parser.add_argument(
-        "--probe-path", type=Path, default=Path("models/detector_probe_pilot.pkl")
+        "--probe-path", type=Path, default=Path("models/detector_probe.pkl")
     )
     parser.add_argument("--abstain-mix-ratio", type=float, default=0.10)
     parser.add_argument("--abstain-max-rate", type=float, default=0.15)

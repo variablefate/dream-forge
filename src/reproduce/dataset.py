@@ -36,7 +36,7 @@ SAMPLES_PER_QUESTION = 10
 MAX_NEW_TOKENS = 50
 CONSISTENCY_THRESHOLD_CORRECT = 10   # all 10 must be correct
 CONSISTENCY_THRESHOLD_INCORRECT = 7  # at least 7/10 incorrect (asymmetric)
-TARGET_PER_CLASS = 500               # goal: 500 correct + 500 incorrect
+TARGET_PER_CLASS = 5000              # use all available (capped by minority class)
 
 SAMPLES_DIR = Path("data/trivia_samples")
 ACTIVATIONS_DIR = Path("data/activations")

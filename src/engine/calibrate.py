@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 console = Console()
 
-DEFAULT_PROBE_PATH = Path("models/detector_probe_pilot.pkl")
+DEFAULT_PROBE_PATH = Path("models/detector_probe.pkl")
 
 
 # ── Data types ─────────────────────────────────────────────────────────────────

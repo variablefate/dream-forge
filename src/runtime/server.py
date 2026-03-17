@@ -36,7 +36,7 @@ console = Console()
 
 DEFAULT_PORT = 8081
 DEFAULT_N = 4
-DETECTOR_PROBE_PATH = Path("models/detector_probe_pilot.pkl")
+DETECTOR_PROBE_PATH = Path("models/detector_probe.pkl")
 
 
 def create_app(model, tokenizer, bon, default_n: int = 1):
