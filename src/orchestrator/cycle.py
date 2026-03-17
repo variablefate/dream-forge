@@ -38,7 +38,7 @@ from src.engine.abstain import (
     load_previous_metrics,
     save_abstain_metrics,
 )
-from src.engine.calibrate import CalibrationResult, calibrate_experiment, load_probe
+from src.engine.calibrate import CalibrationResult, calibrate_experiment, clear_detector_cache, load_probe
 from src.engine.compare import CompareResult, compare_dream_cloud, compare_outputs
 from src.engine.confidence import ConfidenceResult, ConfidenceScorer
 from src.engine.data_prep import DataPrepConfig, PreparedDataset, prepare_training_data
@@ -376,6 +376,7 @@ def run_cycle(config: CycleConfig) -> CycleResult:
         # --------------------------------------------------------------
         # Step 7 — FREE MODEL + DATA PREP + STAGING
         # --------------------------------------------------------------
+        clear_detector_cache()  # release module_dict refs before freeing model
         del model
         gc.collect()
         torch.cuda.empty_cache()
@@ -466,11 +467,14 @@ def run_cycle(config: CycleConfig) -> CycleResult:
             if exp_dict is None:
                 continue
             correct = exp_result.wake_comparison.classification == "correct"
+            tags = exp_dict.get("tags", [])
+            domain = tags[0] if tags else "general"
             eval_suite.add(
                 query=exp_result.wake_result.query,
                 prediction=exp_result.wake_result.text,
                 gold=exp_dict.get("reference_solution", ""),
                 correct=correct,
+                domain=domain,
                 confidence=(
                     exp_result.confidence.confidence
                     if exp_result.confidence

@@ -151,6 +151,16 @@ def _init_detector(model, probe) -> tuple[list[str], dict, int, dict]:
     return result
 
 
+def clear_detector_cache():
+    """Clear the detector init cache to allow model VRAM to be freed.
+
+    Must be called before `del model` in cycle.py — the cache holds
+    module_dict which references all model submodules, preventing GC.
+    """
+    if hasattr(_init_detector, "_cache"):
+        _init_detector._cache.clear()
+
+
 # ── Main calibration ──────────────────────────────────────────────────────────
 
 def calibrate_experiment(

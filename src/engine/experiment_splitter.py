@@ -265,7 +265,7 @@ def build_experiment(
         "lint_results": None,
         "error_logs": None,
         "commands_run": None,
-        "error_output": moment.get("symptom", None),
+        "error_output": moment.get("symptom") or moment.get("problem", ""),
         "constraints": None,
         "resolves_experiment_id": None,
         "synthetic": False,
@@ -353,6 +353,10 @@ def process_session(
     if not moments:
         console.print("[yellow]No moments found in session export.[/yellow]")
         return []
+
+    if not session.get("repo_hash"):
+        console.print("[yellow]Warning: session missing repo_hash — code_change "
+                       "experiments will fail data_prep completeness gates[/yellow]")
 
     console.print(f"[bold]Processing {len(moments)} moments from {session_path.name}[/bold]")
 

@@ -260,7 +260,9 @@ def load_training_data(
 
         context_text = ""
         for cf in context_files[:3]:  # max 3 context files
-            context_text += f"\n### {cf.get('path', 'file')}\n{cf.get('content', '')[:2000]}\n"
+            path = cf.get("path", "file") if isinstance(cf, dict) else "file"
+            content = cf.get("content", "") if isinstance(cf, dict) else ""
+            context_text += f"\n### {path}\n{content[:2000]}\n"
 
         system_msg = "You are a helpful coding assistant. Solve the problem accurately."
         user_msg = problem
