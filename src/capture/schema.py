@@ -156,7 +156,7 @@ class Experiment(BaseModel):
     tags: list[str] = Field(default_factory=list)  # domain tags (python, android, web, etc.)
     confidence: ConfidenceTier = ConfidenceTier.INFERRED
     difficulty: Optional[str] = None  # "hard" | "easy" — Claude's estimate at capture time
-    quality: Optional[int] = None     # 1-5 — Claude's data quality rating (5=focused code fix with real context, 1=vague/broad)
+    quality: Optional[float] = None    # 1-5 — data quality rating (5=verified+focused, 4=real code unverified, 3=decent, 2=weak, 1=filler). Splitter adds +0.5 for passing verification checks.
 
     # Memory governance
     retrieval_count: int = 0

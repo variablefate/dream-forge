@@ -2,37 +2,57 @@
   "session_id": "20260316-230000",
   "repo_hash": "8f92fea",
   "git_start_hash": "5d821fa",
-  "commits": ["5d821fa", "45edeb5", "27c81c2", "70aead0", "7703939", "8f92fea"],
+  "commits": [
+    "5d821fa",
+    "45edeb5",
+    "27c81c2",
+    "70aead0",
+    "7703939",
+    "8f92fea"
+  ],
   "moments": [
     {
       "id": "20260316-230000-001",
       "problem": "tune.py tokenizes the prompt-only text (system+user with add_generation_prompt=True) WITHOUT truncation at line 297. When the prompt exceeds 2048 tokens, prompt_len becomes 3024 while input_ids is truncated to 2048. labels[:3024] = -100 masks ALL labels. CrossEntropyLoss with all-ignored targets computes 0/0 in mean reduction, returning NaN. NaN propagates through backward() and permanently corrupts model weights.",
-      "symptom": "Training loss becomes NaN after encountering a long-context experiment. Model weights corrupted — all subsequent training steps produce NaN.",
+      "symptom": "Training loss becomes NaN after encountering a long-context experiment. Model weights corrupted \u2014 all subsequent training steps produce NaN.",
       "root_cause": "tokenizer(prompt_text, return_tensors='pt') on line 297 had no truncation=True, max_length=MAX_SEQ_LENGTH. The full text tokenization on line 282 truncates, but the prompt-only tokenization doesn't, so prompt_len can exceed the truncated input length.",
       "difficulty": "hard",
-      "why_hard": "Silent corruption — loss looks fine on normal examples. Only manifests on rare long-context experiments. The NaN corrupts weights permanently so all subsequent steps fail too, making the root cause hard to trace back to the specific example.",
-      "files": ["src/engine/tune.py"],
+      "why_hard": "Silent corruption \u2014 loss looks fine on normal examples. Only manifests on rare long-context experiments. The NaN corrupts weights permanently so all subsequent steps fail too, making the root cause hard to trace back to the specific example.",
+      "files": [
+        "src/engine/tune.py"
+      ],
       "function": "load_training_data",
       "commit_before": "8285074",
       "commit_after": "5d821fa",
       "extractable": true,
-      "tags": ["python", "machine-learning", "bug-fix"],
-      "task_group_id": "tune-nan-loss-guard"
+      "tags": [
+        "python",
+        "machine-learning",
+        "bug-fix"
+      ],
+      "task_group_id": "tune-nan-loss-guard",
+      "quality": 4
     },
     {
       "id": "20260316-230000-002",
-      "problem": "best_of_n.py _select() method: when ALL N responses are empty (text='') AND all have hallucination_risk > hedge_threshold, the hedge trigger fires and returns HEDGE_PREFIX + best.text. Since best.text is empty, the user sees 'I'm not fully confident in this answer. Here's my best attempt, but please verify: ' with nothing after it — a dangling promise with no content.",
+      "problem": "best_of_n.py _select() method: when ALL N responses are empty (text='') AND all have hallucination_risk > hedge_threshold, the hedge trigger fires and returns HEDGE_PREFIX + best.text. Since best.text is empty, the user sees 'I'm not fully confident in this answer. Here's my best attempt, but please verify: ' with nothing after it \u2014 a dangling promise with no content.",
       "symptom": "User gets a hedge prefix saying 'here's my best attempt' followed by nothing.",
       "root_cause": "No guard for empty best.text before prepending HEDGE_PREFIX. The all-empty case is rare (requires N consecutive empty generations, each scored risk > 0.7) but possible under OOM or very short max_tokens.",
       "difficulty": "easy",
       "why_easy": "Once identified, the fix is a simple conditional: check if best.text.strip() before prepending the prefix.",
-      "files": ["src/runtime/best_of_n.py"],
+      "files": [
+        "src/runtime/best_of_n.py"
+      ],
       "function": "_select",
       "commit_before": "8285074",
       "commit_after": "5d821fa",
       "extractable": true,
-      "tags": ["python", "bug-fix"],
-      "task_group_id": "bestofn-empty-hedge"
+      "tags": [
+        "python",
+        "bug-fix"
+      ],
+      "task_group_id": "bestofn-empty-hedge",
+      "quality": 4
     },
     {
       "id": "20260316-230000-003",
@@ -40,13 +60,19 @@
       "symptom": "Detector probe accuracy on workflow experiments was lower than expected from TriviaQA validation (where questions are simple and have no context).",
       "root_cause": "CETT features depend on the full input text. The query used for scoring must match what the model actually processed during inference. wake_result.query stores the full user message but calibrate_experiment wasn't using it.",
       "difficulty": "hard",
-      "why_hard": "No error or crash — just silently degraded accuracy. Required understanding the CETT activation extraction pipeline end-to-end to realize the query text matters for feature extraction.",
-      "files": ["src/engine/calibrate.py"],
+      "why_hard": "No error or crash \u2014 just silently degraded accuracy. Required understanding the CETT activation extraction pipeline end-to-end to realize the query text matters for feature extraction.",
+      "files": [
+        "src/engine/calibrate.py"
+      ],
       "function": "calibrate_experiment",
       "commit_before": null,
       "commit_after": "5d821fa",
       "extractable": false,
-      "tags": ["python", "machine-learning", "bug-fix"],
+      "tags": [
+        "python",
+        "machine-learning",
+        "bug-fix"
+      ],
       "task_group_id": "calibrate-query-mismatch"
     },
     {
@@ -55,28 +81,40 @@
       "symptom": "data_prep --stats reported 1 eligible example when 3 valid resolved experiments existed and passed all completeness gates.",
       "root_cause": "The 40% domain cap is designed for scale (prevent Python from dominating at 300+ examples) but int(3 * 0.40) = 1 at cold-start. No minimum dataset size guard to bypass the cap when data is scarce.",
       "difficulty": "hard",
-      "why_hard": "Silent data loss — no error, no warning. Required tracing through the full filtering pipeline (resolved check -> superseded -> synthetic -> completeness -> split -> domain cap -> token budget) to find which step dropped the examples.",
-      "files": ["src/engine/data_prep.py"],
+      "why_hard": "Silent data loss \u2014 no error, no warning. Required tracing through the full filtering pipeline (resolved check -> superseded -> synthetic -> completeness -> split -> domain cap -> token budget) to find which step dropped the examples.",
+      "files": [
+        "src/engine/data_prep.py"
+      ],
       "function": "apply_domain_cap",
       "commit_before": "5d821fa",
       "commit_after": "7703939",
       "extractable": true,
-      "tags": ["python", "data-pipeline", "bug-fix"],
-      "task_group_id": "domain-cap-cold-start"
+      "tags": [
+        "python",
+        "data-pipeline",
+        "bug-fix"
+      ],
+      "task_group_id": "domain-cap-cold-start",
+      "quality": 4
     },
     {
       "id": "20260316-230000-005",
-      "problem": "abstain.py check_abstain_regression() was supposed to guard against over-hedging by checking if the abstain rate exceeds 15%. But the constant MAX_ABSTAIN_RATE=0.15 (described as 'roll back if abstain rate exceeds this' — an absolute ceiling) was used as max_rate_increase (a per-cycle delta check). If the abstain rate grows 5pp each cycle (0.05 -> 0.10 -> 0.15 -> 0.20), each individual increase (0.05) is under 0.15, so the guard never fires. The model can accumulate a 50%+ abstain rate without triggering rollback.",
-      "symptom": "No immediate symptom — would only manifest after multiple training cycles where the abstain rate slowly climbs.",
+      "problem": "abstain.py check_abstain_regression() was supposed to guard against over-hedging by checking if the abstain rate exceeds 15%. But the constant MAX_ABSTAIN_RATE=0.15 (described as 'roll back if abstain rate exceeds this' \u2014 an absolute ceiling) was used as max_rate_increase (a per-cycle delta check). If the abstain rate grows 5pp each cycle (0.05 -> 0.10 -> 0.15 -> 0.20), each individual increase (0.05) is under 0.15, so the guard never fires. The model can accumulate a 50%+ abstain rate without triggering rollback.",
+      "symptom": "No immediate symptom \u2014 would only manifest after multiple training cycles where the abstain rate slowly climbs.",
       "root_cause": "Parameter name mismatch: the constant meant 'absolute max rate' but was passed as 'max rate increase'. The comparison checked delta instead of absolute value.",
       "difficulty": "hard",
-      "why_hard": "Logic error that only manifests across multiple cycles. The code looks correct at a glance — the naming (MAX_ABSTAIN_RATE used as max_rate_increase) obscures the semantic mismatch.",
-      "files": ["src/engine/abstain.py"],
+      "why_hard": "Logic error that only manifests across multiple cycles. The code looks correct at a glance \u2014 the naming (MAX_ABSTAIN_RATE used as max_rate_increase) obscures the semantic mismatch.",
+      "files": [
+        "src/engine/abstain.py"
+      ],
       "function": "check_abstain_regression",
       "commit_before": null,
       "commit_after": "5d821fa",
       "extractable": false,
-      "tags": ["python", "bug-fix"],
+      "tags": [
+        "python",
+        "bug-fix"
+      ],
       "task_group_id": "abstain-rate-ceiling"
     },
     {
@@ -84,12 +122,19 @@
       "moment_type": "reasoning",
       "problem": "The other Claude window claimed Fix B was critical: add_generation_prompt=True injects <think> tags that cause a template prefix mismatch between the full conversation and prompt-only tokenization, silently masking the first 5-7 response tokens during training. Is this actually a bug?",
       "difficulty": "hard",
-      "why_hard": "Required empirical testing with the actual Qwen3.5 tokenizer to verify — the claim was plausible and the reviewer was confident. Template behavior depends on the exact Jinja2 template in tokenizer_config.json which varies by model family.",
-      "context_notes": "Investigation: We ran the Qwen3.5 tokenizer with enable_thinking=False on both paths:\n\n1. Full conversation: [system, user, assistant] with enable_thinking=False, tokenize=False\n2. Prompt-only: [system, user] with enable_thinking=False, tokenize=False, add_generation_prompt=True\n\nResults:\n- Full text: '<|im_start|>system\\n...\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\nHere is the fix.<|im_end|>\\n'\n- Prompt text: '<|im_start|>system\\n...\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n'\n- full_text.startswith(prompt_text) = True\n\nThe empty <think>\\n\\n</think>\\n\\n block is injected CONSISTENTLY in both paths when enable_thinking=False. This is Qwen3.5's way of signaling 'don't think' — the empty block is a prefill token, not an artifact. The prompt boundary lands exactly at 'Here' (the start of reference_solution).\n\nConclusion: Fix B is a FALSE ALARM. The template is consistent. The reviewer's claim that prompt_len is inflated by 5-7 tokens is wrong — those tokens exist in both tokenizations and are correctly masked.\n\nKey lesson: Always verify template behavior empirically with the actual tokenizer before assuming. Different model families handle thinking tokens differently. Qwen3.5 with enable_thinking=False still injects the empty think block, unlike some other models that omit it entirely.",
+      "why_hard": "Required empirical testing with the actual Qwen3.5 tokenizer to verify \u2014 the claim was plausible and the reviewer was confident. Template behavior depends on the exact Jinja2 template in tokenizer_config.json which varies by model family.",
+      "context_notes": "Investigation: We ran the Qwen3.5 tokenizer with enable_thinking=False on both paths:\n\n1. Full conversation: [system, user, assistant] with enable_thinking=False, tokenize=False\n2. Prompt-only: [system, user] with enable_thinking=False, tokenize=False, add_generation_prompt=True\n\nResults:\n- Full text: '<|im_start|>system\\n...\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\nHere is the fix.<|im_end|>\\n'\n- Prompt text: '<|im_start|>system\\n...\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n'\n- full_text.startswith(prompt_text) = True\n\nThe empty <think>\\n\\n</think>\\n\\n block is injected CONSISTENTLY in both paths when enable_thinking=False. This is Qwen3.5's way of signaling 'don't think' \u2014 the empty block is a prefill token, not an artifact. The prompt boundary lands exactly at 'Here' (the start of reference_solution).\n\nConclusion: Fix B is a FALSE ALARM. The template is consistent. The reviewer's claim that prompt_len is inflated by 5-7 tokens is wrong \u2014 those tokens exist in both tokenizations and are correctly masked.\n\nKey lesson: Always verify template behavior empirically with the actual tokenizer before assuming. Different model families handle thinking tokens differently. Qwen3.5 with enable_thinking=False still injects the empty think block, unlike some other models that omit it entirely.",
       "resolution_type": "research_finding",
-      "files": ["src/engine/tune.py"],
-      "tags": ["python", "machine-learning", "investigation"],
-      "task_group_id": "template-mismatch-investigation"
+      "files": [
+        "src/engine/tune.py"
+      ],
+      "tags": [
+        "python",
+        "machine-learning",
+        "investigation"
+      ],
+      "task_group_id": "template-mismatch-investigation",
+      "quality": 3
     },
     {
       "id": "20260316-230000-007",
@@ -97,11 +142,18 @@
       "problem": "Grok suggested 4 'bleeding edge 2026' techniques for our SFT data pipeline: environment-framed generation loops, principled mixing with rephrasing, recursive context-split-tree, and self-critique distillation. Which are worth adopting for our constraints (small personal dataset, detector-only path, teacher-guided distillation, 2048 token cap)?",
       "difficulty": "hard",
       "why_hard": "Required evaluating each technique against our specific design constraints. The suggestions sounded sophisticated but several violated core design principles. Distinguishing genuine improvements from hype required understanding both the techniques and our architecture deeply.",
-      "context_notes": "Evaluated 4 techniques against project constraints:\n\n1. Environment-framed generation loops: ALREADY IN THE PLAN. The wake -> dream -> compare -> detector-prioritized replay -> LoRA cycle IS this pattern. The 'quick win' filter (detector_risk > 0.7 AND embedding_cos < 0.75) is just a concrete threshold for our existing C.7.1 priority formula. No new module needed.\n\n2. Principled mixing + rephrasing: REJECTED. Solution-side rephrasing is dangerous — the SFT target is Claude/Codex's verified answer, and rephrasing it with Qwen 9B risks introducing subtle errors into training targets. Problem-side rephrasing has minor merit but the bottleneck at 300-500 examples is task coverage, not phrasing variety. Also, Grok suggested using all-MiniLM-L6-v2 for paraphrasing — it's an embedding model, not generative. This revealed incomplete understanding of our toolchain.\n\n3. Recursive context-split-tree: REJECTED. Splitting one experiment's context into sub-problems creates unverified training data — reference_solution solves the ORIGINAL problem, not the sub-problems. The model would train on Qwen's unverified answers to its own sub-questions, which is exactly the self-training trap our design avoids.\n\n4. Self-critique distillation: REJECTED. Directly contradicts the plan's core principle: 'SFT target: reference_solution — NOT Qwen's own outputs.' Having a 71.7%-accurate detector guide self-correction, then training on the self-corrected output, compounds errors.\n\nAdopted from both rounds: curriculum sort by priority score (trivial one-liner), embedding spread as diagnostic metric, concrete priority thresholds (detector_risk > 0.7 + cos_sim < 0.75).\n\nKey lesson: Evaluate external suggestions against your specific design invariants, not in the abstract. Techniques that are state-of-the-art for general self-improvement can violate the specific constraints that make your pipeline trustworthy.",
+      "context_notes": "Evaluated 4 techniques against project constraints:\n\n1. Environment-framed generation loops: ALREADY IN THE PLAN. The wake -> dream -> compare -> detector-prioritized replay -> LoRA cycle IS this pattern. The 'quick win' filter (detector_risk > 0.7 AND embedding_cos < 0.75) is just a concrete threshold for our existing C.7.1 priority formula. No new module needed.\n\n2. Principled mixing + rephrasing: REJECTED. Solution-side rephrasing is dangerous \u2014 the SFT target is Claude/Codex's verified answer, and rephrasing it with Qwen 9B risks introducing subtle errors into training targets. Problem-side rephrasing has minor merit but the bottleneck at 300-500 examples is task coverage, not phrasing variety. Also, Grok suggested using all-MiniLM-L6-v2 for paraphrasing \u2014 it's an embedding model, not generative. This revealed incomplete understanding of our toolchain.\n\n3. Recursive context-split-tree: REJECTED. Splitting one experiment's context into sub-problems creates unverified training data \u2014 reference_solution solves the ORIGINAL problem, not the sub-problems. The model would train on Qwen's unverified answers to its own sub-questions, which is exactly the self-training trap our design avoids.\n\n4. Self-critique distillation: REJECTED. Directly contradicts the plan's core principle: 'SFT target: reference_solution \u2014 NOT Qwen's own outputs.' Having a 71.7%-accurate detector guide self-correction, then training on the self-corrected output, compounds errors.\n\nAdopted from both rounds: curriculum sort by priority score (trivial one-liner), embedding spread as diagnostic metric, concrete priority thresholds (detector_risk > 0.7 + cos_sim < 0.75).\n\nKey lesson: Evaluate external suggestions against your specific design invariants, not in the abstract. Techniques that are state-of-the-art for general self-improvement can violate the specific constraints that make your pipeline trustworthy.",
       "resolution_type": "research_finding",
-      "files": ["src/engine/data_prep.py"],
-      "tags": ["machine-learning", "architecture", "evaluation"],
-      "task_group_id": "grok-technique-evaluation"
+      "files": [
+        "src/engine/data_prep.py"
+      ],
+      "tags": [
+        "machine-learning",
+        "architecture",
+        "evaluation"
+      ],
+      "task_group_id": "grok-technique-evaluation",
+      "quality": 3
     }
   ]
 }

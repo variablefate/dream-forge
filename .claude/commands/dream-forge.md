@@ -62,12 +62,12 @@ Each moment needs enough context for a 9B model to understand it.
 - **problem**: 2-4 sentences. What was broken or needed? Be concrete — "CrossEntropyLoss returns NaN when all labels are -100" not "fixed a loss bug."
 - **difficulty**: `hard` or `easy`
 - **why_hard** or **why_easy**: 1-2 sentences explaining the rating.
-- **quality**: 1-5 integer rating of the training data quality (not problem difficulty):
-  - **5**: Focused code fix with real before/after code, specific error message, clear root cause
-  - **4**: Good code or reasoning, minor gaps in context
-  - **3**: Decent but broad — multiple changes or partly prose solution
-  - **2**: Weak context or vague problem statement
-  - **1**: Barely useful — keep as filler only
+- **quality**: 1-5 rating of training data quality (not problem difficulty). The splitter adds +0.5 for passing automated verification (syntax, imports, diff sanity):
+  - **5**: Verified — tests pass on the solution, real code, specific problem, focused fix (reserved for Tier 1a verified experiments)
+  - **4**: Real before/after code, specific error, clear root cause — but unverified
+  - **3**: Good code or reasoning, minor gaps (large function, no error message)
+  - **2**: Prose-heavy, broad, or weak context
+  - **1**: Filler — keep only if nothing better exists
 - **tags**: Domain tags (python, machine-learning, config, etc.)
 - **task_group_id**: Kebab-case group ID. Moments from the same logical task share a group.
 

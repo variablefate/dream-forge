@@ -60,6 +60,82 @@ def get_file_before_commit(path: str, commit_hash: str) -> str:
     return get_file_at_commit(path, f"{commit_hash}~1")
 
 
+# ── Verification checks ───────────────────────────────────────────────────────
+
+def verify_code_experiment(
+    before_code: str, after_code: str,
+    primary_file: str, commit_after: str,
+) -> tuple[float, list[str]]:
+    """Run lightweight verification checks on a code experiment.
+
+    Returns (bonus, checks_passed) where bonus is 0.0 or 0.5.
+    Checks:
+      1. Diff sanity: before and after are actually different
+      2. Syntax check: after-code compiles as valid Python
+      3. Import check: the file imports cleanly at commit_after
+    """
+    checks_passed = []
+    checks_failed = []
+
+    # 1. Diff sanity — before and after must differ
+    if before_code.strip() != after_code.strip():
+        checks_passed.append("diff_sanity")
+    else:
+        checks_failed.append("diff_sanity: before and after are identical")
+
+    # 2. Syntax check — after-code must be valid Python
+    try:
+        compile(after_code, "<after>", "exec")
+        checks_passed.append("syntax")
+    except SyntaxError:
+        # Function-level extract may not compile standalone (missing imports)
+        # Try wrapping in a dummy context
+        try:
+            compile(f"class _:\n" + "\n".join(
+                f"  {line}" for line in after_code.split("\n")
+            ), "<after_wrapped>", "exec")
+            checks_passed.append("syntax_wrapped")
+        except SyntaxError:
+            checks_failed.append("syntax: after-code has syntax errors")
+
+    # 3. Import check — the file imports at commit_after
+    if primary_file.endswith(".py") and commit_after:
+        module_path = primary_file.replace("/", ".").replace("\\", ".").removesuffix(".py")
+        result = subprocess.run(
+            ["git", "stash"],
+            capture_output=True, text=True,
+        )
+        stashed = "No local changes" not in result.stdout
+
+        try:
+            result = subprocess.run(
+                ["git", "checkout", commit_after, "--", primary_file],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                import_result = subprocess.run(
+                    ["uv", "run", "python", "-c", f"import {module_path}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if import_result.returncode == 0:
+                    checks_passed.append("import")
+                else:
+                    checks_failed.append(f"import: {import_result.stderr[:100]}")
+        except subprocess.TimeoutExpired:
+            checks_failed.append("import: timeout")
+        finally:
+            # Restore working tree
+            subprocess.run(["git", "checkout", "HEAD", "--", primary_file],
+                          capture_output=True)
+            if stashed:
+                subprocess.run(["git", "stash", "pop"], capture_output=True)
+
+    # Bonus: +0.5 if all checks pass
+    bonus = 0.5 if len(checks_failed) == 0 and len(checks_passed) >= 2 else 0.0
+
+    return bonus, checks_passed + [f"FAIL:{f}" for f in checks_failed]
+
+
 def extract_function_from_file(content: str, function_name: str) -> str:
     """Extract a function/class block from file content by name.
 
@@ -221,9 +297,13 @@ def build_experiment(
     before_code: str,
     after_code: str,
     problem_refined: str | None = None,
+    quality_bonus: float = 0.0,
+    verification_checks: list[str] | None = None,
 ) -> dict:
     """Build a complete experiment JSON from extracted code."""
     primary_file = moment.get("files", ["unknown"])[0]
+    base_quality = moment.get("quality") or 3
+    final_quality = min(5.0, base_quality + quality_bonus)
 
     return {
         "id": str(uuid.uuid4()),
@@ -275,7 +355,7 @@ def build_experiment(
         "tags": moment.get("tags", ["python"]),
         "confidence": "inferred",
         "difficulty": moment.get("difficulty", None),
-        "quality": moment.get("quality", None),
+        "quality": final_quality,
         "retrieval_count": 0,
         "positive_outcome_count": 0,
         "last_retrieved": None,
@@ -388,14 +468,32 @@ def process_session(
         # Code moments: deterministic git extraction
         extracted = deterministic_extract(moment)
         if extracted and extracted.get("after_code"):
+            # Run verification checks
+            primary_file = moment.get("files", ["unknown"])[0]
+            commit_after = moment.get("commit_after", moment.get("commit", ""))
+            bonus, checks = verify_code_experiment(
+                extracted["before_code"], extracted["after_code"],
+                primary_file, commit_after,
+            )
             experiments.append(build_experiment(
                 moment, session,
                 before_code=extracted["before_code"],
                 after_code=extracted["after_code"],
+                quality_bonus=bonus,
             ))
+            check_str = ", ".join(c for c in checks if not c.startswith("FAIL:"))
+            fail_str = ", ".join(c.replace("FAIL:", "") for c in checks if c.startswith("FAIL:"))
+            quality_display = f"q={moment.get('quality', 3)}"
+            if bonus > 0:
+                quality_display += f"+{bonus}"
+            status_parts = [f"deterministic", quality_display]
+            if check_str:
+                status_parts.append(f"verified:{check_str}")
+            if fail_str:
+                status_parts.append(f"[yellow]failed:{fail_str}[/yellow]")
             console.print(
                 f"  [green]OK[/green] [{moment.get('difficulty', '?')}] "
-                f"{moment.get('task_group_id', '?')} — deterministic extraction")
+                f"{moment.get('task_group_id', '?')} — {' | '.join(status_parts)}")
         else:
             # Check if explicitly marked non-extractable — drop it
             if not moment.get("extractable", True):

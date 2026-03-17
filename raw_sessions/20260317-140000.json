@@ -2,7 +2,11 @@
   "session_id": "20260317-140000",
   "repo_hash": "82603fe",
   "git_start_hash": "5d821fa",
-  "commits": ["c9a208a", "2ac8963", "b1e53d1"],
+  "commits": [
+    "c9a208a",
+    "2ac8963",
+    "b1e53d1"
+  ],
   "moments": [
     {
       "id": "20260317-140000-001",
@@ -12,13 +16,22 @@
       "root_cause": "_init_detector caches module_dict which holds references to all model submodules. Python's garbage collector can't free the model while any reference to its components exists. The cache was added to avoid recomputing weight norms per-experiment but inadvertently created an anchor preventing model deletion.",
       "difficulty": "hard",
       "why_hard": "Silent resource leak discovered during code review, not during runtime. The cache was a performance optimization that created a VRAM retention bug. Required understanding the interaction between Python GC, PyTorch CUDA memory, and the caching pattern.",
-      "files": ["src/engine/calibrate.py", "src/orchestrator/cycle.py"],
+      "files": [
+        "src/engine/calibrate.py",
+        "src/orchestrator/cycle.py"
+      ],
       "function": "_init_detector",
       "commit_before": "5d821fa",
       "commit_after": "c9a208a",
       "extractable": true,
-      "tags": ["python", "machine-learning", "memory-management", "bug-fix"],
-      "task_group_id": "detector-cache-vram-leak"
+      "tags": [
+        "python",
+        "machine-learning",
+        "memory-management",
+        "bug-fix"
+      ],
+      "task_group_id": "detector-cache-vram-leak",
+      "quality": 3
     },
     {
       "id": "20260317-140000-002",
@@ -28,25 +41,39 @@
       "root_cause": "The output directory was only created as a side effect of _prepare_staging_dir() (called during training prep) or the final result save (line 560). When training is skipped, neither runs before eval_suite.save().",
       "difficulty": "easy",
       "why_easy": "Once identified, the fix is a single line: config.output_dir.mkdir(parents=True, exist_ok=True) at the top of the non-dry-run block.",
-      "files": ["src/orchestrator/cycle.py"],
+      "files": [
+        "src/orchestrator/cycle.py"
+      ],
       "function": "run_cycle",
       "commit_before": "c9a208a",
       "commit_after": "2ac8963",
       "extractable": true,
-      "tags": ["python", "bug-fix"],
-      "task_group_id": "cycle-output-dir-crash"
+      "tags": [
+        "python",
+        "bug-fix"
+      ],
+      "task_group_id": "cycle-output-dir-crash",
+      "quality": 3
     },
     {
       "id": "20260317-140000-003",
       "moment_type": "reasoning",
       "problem": "The pilot detector probe trained on 53 samples from the B.0b sanity gate achieved 71.7% accuracy. B.1 collected 5000 TriviaQA questions with 10 samples each. How much does scaling to the full dataset improve the detector, and what's the optimal sample count?",
       "difficulty": "easy",
-      "why_easy": "Straightforward scaling experiment — train same LogisticRegression on more data and measure CV accuracy. No architectural decisions needed.",
-      "context_notes": "B.1 dataset collection: 5000 TriviaQA questions, 10 samples each (50,000 total responses). Consistency filtering yielded 2056 all-correct (10/10) and 1751 mostly-incorrect (>=7/10 wrong). Balanced at 1751 per class = 3502 total samples.\n\nB.2 CETT extraction: 393,216 features per sample (32 layers x 12,288 neurons). Extracted with forward hooks capturing (abs(activations) * weight_norms) / (output_norms + eps), mean across tokens. User-only messages (no system prompt) matching probe training format.\n\nB.3 probe training: L2 LogisticRegression (C=1.0, lbfgs, max_iter=1000).\n- Training accuracy: 100% (expected — high-dimensional linear model on 393K features)\n- 5-fold CV accuracy: 84.6% +/- 2.1%\n- Per fold: 85.9%, 86.3%, 86.4%, 82.6%, 81.6%\n\nComparison:\n- Pilot (53 samples): 71.7% accuracy\n- Full (3502 samples): 84.6% accuracy\n- Improvement: +12.9 percentage points from 66x more data\n\nThe probe is now production-quality. 84.6% on held-out data means the detector correctly identifies hallucination vs correct response ~85% of the time from internal neuron activations alone. This feeds into: best-of-N scoring, calibrate.py experiment analysis, curriculum priority in data_prep.py, and abstain candidate identification.",
+      "why_easy": "Straightforward scaling experiment \u2014 train same LogisticRegression on more data and measure CV accuracy. No architectural decisions needed.",
+      "context_notes": "B.1 dataset collection: 5000 TriviaQA questions, 10 samples each (50,000 total responses). Consistency filtering yielded 2056 all-correct (10/10) and 1751 mostly-incorrect (>=7/10 wrong). Balanced at 1751 per class = 3502 total samples.\n\nB.2 CETT extraction: 393,216 features per sample (32 layers x 12,288 neurons). Extracted with forward hooks capturing (abs(activations) * weight_norms) / (output_norms + eps), mean across tokens. User-only messages (no system prompt) matching probe training format.\n\nB.3 probe training: L2 LogisticRegression (C=1.0, lbfgs, max_iter=1000).\n- Training accuracy: 100% (expected \u2014 high-dimensional linear model on 393K features)\n- 5-fold CV accuracy: 84.6% +/- 2.1%\n- Per fold: 85.9%, 86.3%, 86.4%, 82.6%, 81.6%\n\nComparison:\n- Pilot (53 samples): 71.7% accuracy\n- Full (3502 samples): 84.6% accuracy\n- Improvement: +12.9 percentage points from 66x more data\n\nThe probe is now production-quality. 84.6% on held-out data means the detector correctly identifies hallucination vs correct response ~85% of the time from internal neuron activations alone. This feeds into: best-of-N scoring, calibrate.py experiment analysis, curriculum priority in data_prep.py, and abstain candidate identification.",
       "resolution_type": "research_finding",
-      "files": ["src/reproduce/dataset.py", "models/detector_probe.pkl"],
-      "tags": ["machine-learning", "evaluation", "h-neurons"],
-      "task_group_id": "full-detector-probe-training"
+      "files": [
+        "src/reproduce/dataset.py",
+        "models/detector_probe.pkl"
+      ],
+      "tags": [
+        "machine-learning",
+        "evaluation",
+        "h-neurons"
+      ],
+      "task_group_id": "full-detector-probe-training",
+      "quality": 3
     }
   ]
 }
