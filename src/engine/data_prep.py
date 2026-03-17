@@ -146,6 +146,12 @@ def compute_priority(exp: dict) -> float:
     """
     score = 0.0
 
+    # Claude's difficulty estimate from capture time
+    difficulty = exp.get("difficulty", "")
+    if difficulty == "hard":
+        score += 0.3
+    # "easy" gets no boost — serves as anchor data
+
     # Detector risk (if available from calibrate.py)
     detector_risk = exp.get("_detector_risk", 0.0)
     score += PRIORITY_WEIGHTS["detector_risk"] * detector_risk

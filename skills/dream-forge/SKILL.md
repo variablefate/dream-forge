@@ -1,168 +1,187 @@
 # dream-forge: Experiment Capture
 
-Capture a resolved or unresolved experiment from the current conversation into the dream-forge training pipeline.
+Capture learnable moments from the current conversation as focused training experiments for a self-improving local model (Qwen3.5-9B).
 
 ## When to trigger
 
-Run `/dream-forge` after completing a plan execution, fixing a bug, answering a research question, or at any natural stopping point where the conversation produced useful problem-solving data.
+Run `/dream-forge` after completing work — bug fixes, features, research, config changes, or at any natural stopping point.
 
 **Proactive suggestion:** If the user just committed code and hasn't captured an experiment yet in this session, suggest running `/dream-forge` before ending the conversation. Every resolved task is training data — don't let it go uncaptured.
 
+## Core principle: capture learnable moments, not session summaries
+
+A "learnable moment" is a specific point where someone had to think — a bug found, an edge case discovered, a non-obvious decision made, an error debugged. Each moment becomes one focused experiment with **actual code** in the context and solution.
+
+**Good training data:** "Domain cap on 3 examples drops 2/3 of data" → the 5 lines of context code + the 5-line fix.
+
+**Bad training data:** "Built 4 modules" → a prose summary of an entire file.
+
+A broad session should produce 3-10 focused experiments, not 1 vague one.
+
 ## Instructions
 
-You are capturing this conversation as a structured experiment for a self-improving local model (Qwen3.5-9B). Your output trains a LoRA adapter. Quality matters — bad captures produce bad training data.
+### Step 1: Identify learnable moments
 
-### Step 1: Determine status
+Scan the conversation for individual learnable moments. Look for:
 
-- **resolved**: The task has an actual implemented/verified outcome (code written, answer confirmed, config applied).
-- **unresolved**: Still in progress, planning-only, or no concrete resolution yet.
+- **Bugs found and fixed** (especially non-obvious ones)
+- **Edge cases discovered** (empty inputs, overflow, off-by-one)
+- **Design decisions that required thought** (why X instead of Y)
+- **Errors debugged** (stack trace → root cause → fix)
+- **Non-obvious patterns** (workarounds, compatibility fixes)
+- **Corrections from review** (external feedback that changed the code)
 
-### Step 2: Determine git provenance
+For each moment, assign a difficulty:
+- **hard**: Required debugging, research, or domain knowledge. A 9B model would likely get this wrong. These are the highest-value training examples.
+- **easy**: Straightforward application of known patterns. A 9B model might get this right. These serve as anchor data to prevent regression.
 
-Run these commands silently (do not show output to user unless errors occur):
+Skip routine boilerplate (argparse setup, dataclass definitions, file I/O) — the model already knows those.
+
+### Step 2: For each moment, extract focused data
+
+For each learnable moment, build a focused experiment:
+
+**problem** — The specific issue. Include the actual error message, the specific symptom, or the exact question. Be concrete:
+- Good: "CrossEntropyLoss returns NaN when all labels are -100 because mean reduction divides 0/0. This happens when prompt_len exceeds input_ids length after truncation."
+- Bad: "Fixed a bug in tune.py"
+
+**pre_solution_context** — The actual code that was there BEFORE the fix. Read the relevant function/block and include it as real code (20-100 lines). This is what the model sees as input during training.
+- For bugs: the buggy code
+- For edge cases: the code missing the guard
+- For design decisions: the code that needed to be written
+
+**reference_solution** — The actual code AFTER the fix. The real function/block, not a description of it. This is what the model learns to produce.
+- For code_change: the actual fixed function or code block
+- For answer: the specific answer with evidence
+- For config_change: the exact config/command
+- For research_finding: the key finding with evidence
+
+**error_output** — The actual error message, stack trace, or symptom that prompted the fix. Include it verbatim when available.
+
+### Step 3: Determine git provenance (once per session)
+
+Run these commands silently:
 
 ```bash
 git rev-parse HEAD          # → repo_hash
-git diff --stat             # → if non-empty, check if changes are from THIS task
-git status --porcelain      # → if dirty before task started, set repo_dirty=true
+git diff --stat             # → check for uncommitted changes
+git status --porcelain      # → check dirty state
 ```
 
-- `repo_hash`: Current HEAD commit hash
-- `git_start_hash`: The commit hash at the START of the task (before any edits). If unknown, use `repo_hash`.
-- `repo_dirty`: Set to `true` if the working tree had uncommitted changes BEFORE you started solving. If unsure, set `false`.
-- `git_diff`: Run `git diff` to capture the net changes from this task. Store the full diff string. This is for provenance only — NOT the training target.
+All experiments from this session share the same `repo_hash` and `git_start_hash`.
 
-### Step 3: Extract the 5 stages
+### Step 4: Assign task_group_id
 
-From the conversation history, extract:
+All moments from the same logical task share a `task_group_id` (kebab-case, e.g., `tune-nan-loss-fix`). Moments from different tasks get different group IDs. This controls train/test split integrity.
 
-1. **problem**: What the user needed. Be specific — include error messages, file paths, constraints. This is the primary embedding field for retrieval.
-2. **breakdown**: How the problem was decomposed into sub-tasks. List of strings.
-3. **proposed_solutions**: What approaches were considered. List of strings.
-4. **review_issues**: Problems found during implementation. Each entry is a ReviewRound with `round_number`, `issues_found` (list), `corrections_made` (list). Empty list if no review cycles.
-5. **final_plan**: The planning prose — what was decided and why. This is NOT the solution itself.
+### Step 5: Build the JSON for each moment
 
-### Step 4: Extract the reference solution (resolved only)
-
-For **resolved** experiments, `reference_solution` is MANDATORY. This is the **actual final correct output** that solved the problem:
-
-- **code_change**: The final correct code (function, class, or block AFTER the fix). NOT a diff — the actual code. Store diffs in `git_diff` instead.
-- **answer**: A structured summary of the answer.
-- **config_change**: The exact config/command that resolved the issue.
-- **research_finding**: The key finding, with evidence.
-
-Set `resolution_type` to match: `code_change`, `answer`, `config_change`, or `research_finding`.
-
-For **unresolved** experiments, set `reference_solution` to `null` and `resolution_type` to `null`.
-
-### Step 5: Classify pre-solution vs post-solution context
-
-**pre_solution_context** — files/info available BEFORE solving:
-- `error_trace`: Files referenced in error messages/stack traces shown before you started solving.
-- `user_provided`: Files the user explicitly shared or referenced.
-- `retrieved_pre`: Files you read BEFORE your first Edit/Write/modifying-Bash call.
-
-**post_solution_artifacts** — files created/modified AFTER solving:
-- `diff`: Files appearing in `git diff` (modified by your edits).
-- `test_output`: Test results from verification.
-- `retrieved_post`: Files read after the first modification.
-
-Use git provenance as the decision boundary: files present in `git diff` = post-solution.
-
-### Step 6: Assign task_group_id
-
-Generate a short, descriptive kebab-case ID for the underlying task/bug/feature (e.g., `compat-check-vram-fix`, `lance-db-crud-setup`). If this conversation continues work from a previous experiment, reuse the same `task_group_id`. This field controls train/test split integrity — experiments with the same group ID stay in the same split.
-
-### Step 7: Build the JSON
-
-Generate a complete JSON object with ALL required fields. Use this template:
+For each learnable moment, generate a complete experiment JSON:
 
 ```json
 {
-  "id": "<generate a UUID v4>",
+  "id": "<UUID v4>",
   "source": "claude",
-  "timestamp": "<current ISO 8601 datetime>",
+  "timestamp": "<ISO 8601>",
   "project": "dream-forge",
-  "problem": "<from step 3>",
-  "breakdown": ["<step 1>", "<step 2>", "..."],
-  "proposed_solutions": ["<approach 1>", "<approach 2>", "..."],
-  "review_issues": [
-    {
-      "round_number": 1,
-      "issues_found": ["<issue>"],
-      "corrections_made": ["<fix>"]
-    }
-  ],
-  "final_plan": "<from step 3>",
-  "status": "resolved or unresolved",
-  "task_group_id": "<from step 6>",
+  "problem": "<specific problem — include actual error messages>",
+  "breakdown": ["<sub-step 1>", "<sub-step 2>"],
+  "proposed_solutions": ["<what was tried>"],
+  "review_issues": [],
+  "final_plan": "<brief — what was decided and why>",
+  "status": "resolved",
+  "task_group_id": "<from step 4>",
   "superseded": false,
-  "reference_solution": "<from step 4, or null>",
-  "resolution_type": "<code_change|answer|config_change|research_finding, or null>",
+  "reference_solution": "<ACTUAL CODE — the function/block after the fix>",
+  "resolution_type": "code_change",
   "pre_solution_context": [
     {
       "path": "src/example.py",
-      "content": "<relevant excerpt>",
-      "revision": "<git hash or null>",
-      "provenance": "error_trace|user_provided|retrieved_pre"
+      "content": "<ACTUAL CODE — the function/block BEFORE the fix, 20-100 lines>",
+      "revision": "<git hash>",
+      "provenance": "retrieved_pre"
     }
   ],
   "post_solution_artifacts": [
     {
       "path": "src/example.py",
-      "content": "<modified excerpt>",
+      "content": "<the modified code>",
       "revision": null,
-      "provenance": "diff|test_output|retrieved_post"
+      "provenance": "diff"
     }
   ],
-  "repo_hash": "<from step 2>",
+  "repo_hash": "<from step 3>",
   "repo_dirty": false,
-  "git_diff": "<from step 2, or null>",
-  "git_start_hash": "<from step 2, or null>",
+  "git_diff": null,
+  "git_start_hash": "<from step 3>",
   "test_results": null,
   "build_results": null,
   "lint_results": null,
   "error_logs": null,
-  "commands_run": ["<commands executed during resolution>"],
-  "error_output": "<original error that prompted the task, or null>",
-  "constraints": ["<any constraints mentioned>"],
+  "commands_run": null,
+  "error_output": "<actual error message or null>",
+  "constraints": null,
   "resolves_experiment_id": null,
   "synthetic": false,
   "generator": null,
   "parent_experiment_id": null,
   "generation_depth": 0,
-  "tags": ["<domain tags: python, android, web, config, research, etc.>"],
+  "tags": ["python"],
   "confidence": "inferred",
+  "difficulty": "hard",
   "retrieval_count": 0,
   "positive_outcome_count": 0,
   "last_retrieved": null
 }
 ```
 
-**Critical rules:**
-- If `status` is `resolved`, both `reference_solution` and `resolution_type` MUST be non-null.
-- `problem` and `task_group_id` MUST be non-empty strings.
-- All enum values must be lowercase: `resolved`, `unresolved`, `code_change`, `answer`, `config_change`, `research_finding`, `claude`, `inferred`.
-- UUIDs must be valid v4 format.
-- Timestamps must be ISO 8601.
+### Step 6: Save and validate each experiment
 
-### Step 8: Save and validate
+For each moment:
 
-1. Generate a filename: `experiments/<YYYYMMDD>-<HHMMSS>-<slug>.json` where `<slug>` is a short kebab-case description (3-5 words).
-2. Write the JSON file.
-3. Run validation:
+1. Filename: `experiments/<YYYYMMDD>-<HHMMSS>-<slug>.json` (increment seconds for multiple)
+2. Write the JSON file
+3. Validate:
 
 ```bash
 uv run python -m src.capture.cli validate experiments/<filename>.json
 ```
 
-4. If validation fails, read the error, fix the JSON, and retry (max 2 retries).
-5. Report the result to the user: experiment ID, status, and file path.
+4. If validation fails, fix and retry (max 2 retries)
+
+### Step 7: Report summary to user
+
+After all moments are captured, show a summary table:
+
+```
+Captured N learnable moments:
+  [hard] tune-nan-loss — NaN from all-masked labels (tune.py)
+  [easy] best-of-n-truncation — CETT missing max_length (best_of_n.py)
+  [hard] calibrate-query-mismatch — CETT query didn't match inference prompt
+  ...
+Saved to experiments/
+```
+
+## Difficulty guidelines
+
+**hard** — assign when:
+- The fix required understanding WHY something failed (not just WHAT failed)
+- Multiple approaches were considered before finding the right one
+- The bug was subtle (wrong results, not a crash)
+- Domain knowledge was needed (VRAM budgets, tokenizer behavior, probe training format)
+- External review was needed to find the issue
+
+**easy** — assign when:
+- The fix was mechanical (add a missing parameter, fix a typo)
+- The pattern is well-known (add truncation, add a None check)
+- Anyone reading the error message would know what to do
 
 ## What NOT to do
 
-- Do NOT fabricate information not present in the conversation.
-- Do NOT include post-solution artifacts (test results, diffs) in the training prompt context — they go in `post_solution_artifacts`, not `pre_solution_context`.
-- Do NOT set `reference_solution` for unresolved experiments.
-- Do NOT generate synthetic data (synthetic=true) — this skill captures real experiments only.
-- Do NOT skip fields — the schema has ~35 fields and Pydantic validation will catch missing ones.
+- Do NOT write prose summaries as reference_solution — use actual code
+- Do NOT capture entire files — capture the specific function/block (20-100 lines)
+- Do NOT fabricate code not present in the conversation
+- Do NOT combine multiple unrelated fixes into one experiment
+- Do NOT set `reference_solution` for unresolved experiments
+- Do NOT generate synthetic data (synthetic=true) — this skill captures real experiments only
+- Do NOT skip the `difficulty` field — the training pipeline uses it for curriculum ordering
