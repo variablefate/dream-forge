@@ -6,6 +6,8 @@ Capture a resolved or unresolved experiment from the current conversation into t
 
 Run `/dream-forge` after completing a plan execution, fixing a bug, answering a research question, or at any natural stopping point where the conversation produced useful problem-solving data.
 
+**Proactive suggestion:** If the user just committed code and hasn't captured an experiment yet in this session, suggest running `/dream-forge` before ending the conversation. Every resolved task is training data — don't let it go uncaptured.
+
 ## Instructions
 
 You are capturing this conversation as a structured experiment for a self-improving local model (Qwen3.5-9B). Your output trains a LoRA adapter. Quality matters — bad captures produce bad training data.
