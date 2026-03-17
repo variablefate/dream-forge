@@ -173,33 +173,13 @@ class BestOfN:
     def score_response(
         self, model, tokenizer, query: str, response_text: str,
     ) -> ScoredResponse:
-        """Score a single response with the detector probe."""
+        """Score a single response with the detector probe.
+
+        Public API for external callers (calibrate.py, etc.).
+        Internally delegates to _score_with_cett.
+        """
         self._init_hooks(model)
-
-        # Build full text for CETT extraction — user-only messages (no system prompt)
-        # to match the probe's training data format (sanity_gate uses user-only)
-        messages = [
-            {"role": "user", "content": query},
-        ]
-        prompt = tokenizer.apply_chat_template(
-            messages, enable_thinking=False,
-            tokenize=False, add_generation_prompt=True)
-        full_text = prompt + response_text
-
-        features = extract_cett_for_text(
-            model, tokenizer, full_text,
-            self._layer_names, self._weight_norms, self._num_neurons,
-            module_dict=self._module_dict)
-
-        # Detector: P(hallucinated) is class 1
-        proba = self.probe.predict_proba(features.reshape(1, -1))[0]
-        hallucination_risk = float(proba[1])
-
-        return ScoredResponse(
-            text=response_text,
-            hallucination_risk=hallucination_risk,
-            cett_features=features,
-        )
+        return self._score_with_cett(model, tokenizer, query, response_text)
 
     def generate(
         self,
@@ -209,16 +189,56 @@ class BestOfN:
         temperature: float = DEFAULT_TEMPERATURE,
         max_new_tokens: int = MAX_NEW_TOKENS,
     ) -> BestOfNResult:
-        """Generate N responses, score, and select the best one."""
-        t0 = time.monotonic()
+        """Generate N responses, score, and select the best one.
 
-        # Pass@1 fast path
+        Optimized: uses num_return_sequences for batched generation (shared
+        KV cache on the prompt), then scores each response with a single
+        CETT extraction pass that captures activations during a batched
+        forward pass instead of N separate passes.
+        """
+        t0 = time.monotonic()
+        self._init_hooks(model)
+
+        # Build the prompt once
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": query},
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, enable_thinking=False,
+            tokenize=False, add_generation_prompt=True)
+        device = next(model.parameters()).device
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        prompt_len = inputs.input_ids.shape[1]
+
+        # Guard: do_sample=True requires temperature > 0
+        safe_temp = max(temperature, 0.1)
+
+        # Generate N responses in one batched call
+        actual_n = max(1, n)
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=safe_temp,
+                top_p=0.9,
+                do_sample=True,
+                num_return_sequences=actual_n,
+            )
+
+        # Decode all responses
+        texts = []
+        for i in range(actual_n):
+            text = tokenizer.decode(
+                outputs[i][prompt_len:], skip_special_tokens=True).strip()
+            texts.append(text)
+
+        # Pass@1 fast path: score the single response
         if n <= 1:
-            text = self._generate_one(model, tokenizer, query, temperature, max_new_tokens)
-            if not text.strip():
+            if not texts[0]:
                 scored = ScoredResponse(text="", hallucination_risk=1.0)
             else:
-                scored = self.score_response(model, tokenizer, query, text)
+                scored = self._score_with_cett(model, tokenizer, query, texts[0])
             return BestOfNResult(
                 text=scored.text,
                 confidence=1.0 - scored.hallucination_risk,
@@ -228,47 +248,121 @@ class BestOfN:
                 elapsed_seconds=time.monotonic() - t0,
             )
 
-        # Generate N responses
-        responses: list[ScoredResponse] = []
-        for i in range(n):
-            text = self._generate_one(model, tokenizer, query, temperature, max_new_tokens)
-            if not text.strip():
-                # Empty generation — assign max risk so it's never selected
-                responses.append(ScoredResponse(text="", hallucination_risk=1.0))
-                continue
-            scored = self.score_response(model, tokenizer, query, text)
-            responses.append(scored)
+        # Score all N responses — batch the CETT extraction
+        responses = self._score_batch(model, tokenizer, query, texts)
 
         # Selection strategy
         return self._select(responses, n, time.monotonic() - t0)
 
-    def _generate_one(
-        self, model, tokenizer, query: str,
-        temperature: float, max_new_tokens: int,
-    ) -> str:
-        """Generate a single response."""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": query},
-        ]
-        prompt = tokenizer.apply_chat_template(
+    def _score_with_cett(
+        self, model, tokenizer, query: str, response_text: str,
+    ) -> ScoredResponse:
+        """Score a single response with CETT extraction."""
+        # Build full text for CETT — user-only (no system prompt) to match probe training
+        messages = [{"role": "user", "content": query}]
+        cett_prompt = tokenizer.apply_chat_template(
             messages, enable_thinking=False,
             tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
-        prompt_len = inputs.input_ids.shape[1]
+        full_text = cett_prompt + response_text
 
-        # Guard: do_sample=True requires temperature > 0
-        safe_temp = max(temperature, 0.1)
+        features = extract_cett_for_text(
+            model, tokenizer, full_text,
+            self._layer_names, self._weight_norms, self._num_neurons,
+            module_dict=self._module_dict)
+
+        proba = self.probe.predict_proba(features.reshape(1, -1))[0]
+        return ScoredResponse(
+            text=response_text,
+            hallucination_risk=float(proba[1]),
+            cett_features=features,
+        )
+
+    def _score_batch(
+        self, model, tokenizer, query: str, texts: list[str],
+    ) -> list[ScoredResponse]:
+        """Score multiple responses with batched CETT extraction.
+
+        Instead of N separate forward passes, concatenates all
+        prompt+response texts and runs them through the model in a
+        single batched forward pass with hooks to capture activations.
+        """
+        # Build full texts for CETT — user-only (no system prompt)
+        messages = [{"role": "user", "content": query}]
+        cett_prompt = tokenizer.apply_chat_template(
+            messages, enable_thinking=False,
+            tokenize=False, add_generation_prompt=True)
+
+        full_texts = []
+        valid_indices = []
+        for i, text in enumerate(texts):
+            if not text.strip():
+                continue
+            full_texts.append(cett_prompt + text)
+            valid_indices.append(i)
+
+        # Batch tokenize
+        if not full_texts:
+            return [ScoredResponse(text=t, hallucination_risk=1.0) for t in texts]
+
+        batch_inputs = tokenizer(
+            full_texts, return_tensors="pt", truncation=True,
+            max_length=2048, padding=True,
+        ).to(next(model.parameters()).device)
+
+        # Register hooks for batch CETT extraction
+        layer_io: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        handles = []
+        for name in self._layer_names:
+            mod = self._module_dict[name]
+            def hook(m, inp, out, n=name):
+                layer_io[n] = (inp[0].detach(), out.detach())
+            handles.append(mod.register_forward_hook(hook))
+
         with torch.no_grad():
-            out = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                temperature=safe_temp,
-                top_p=0.9,
-                do_sample=True,
+            model(**batch_inputs)
+
+        for h in handles:
+            h.remove()
+
+        # Extract per-sample CETT features from batched activations
+        responses = [ScoredResponse(text=t, hallucination_risk=1.0) for t in texts]
+        batch_size = len(full_texts)
+        attention_mask = batch_inputs.get("attention_mask")
+
+        for batch_idx, orig_idx in enumerate(valid_indices):
+            layer_cetts = []
+            for name in self._layer_names:
+                if name not in layer_io:
+                    layer_cetts.append(np.zeros(self._num_neurons, dtype=np.float32))
+                    continue
+                act_in, act_out = layer_io[name]
+                # Extract this sample from the batch
+                sample_in = act_in[batch_idx].float()
+                sample_out = act_out[batch_idx].float()
+
+                # Mask padding tokens if attention_mask available
+                if attention_mask is not None:
+                    mask = attention_mask[batch_idx].bool()
+                    sample_in = sample_in[mask]
+                    sample_out = sample_out[mask]
+
+                wn = self._weight_norms[name].to(sample_in.device)
+                act_abs = sample_in.abs()
+                out_norms = sample_out.norm(dim=-1, keepdim=True)
+                cett = (act_abs * wn) / (out_norms + 1e-8)
+                layer_cetts.append(cett.mean(dim=0).cpu().numpy())
+
+            features = np.concatenate(layer_cetts)
+            proba = self.probe.predict_proba(features.reshape(1, -1))[0]
+
+            responses[orig_idx] = ScoredResponse(
+                text=texts[orig_idx],
+                hallucination_risk=float(proba[1]),
+                cett_features=features,
             )
 
-        return tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
+        layer_io.clear()
+        return responses
 
     def _select(
         self, responses: list[ScoredResponse], n: int, elapsed: float,
