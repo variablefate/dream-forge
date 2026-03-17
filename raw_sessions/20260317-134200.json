@@ -1,0 +1,24 @@
+{
+  "session_id": "20260317-134200",
+  "repo_hash": "82603fe",
+  "git_start_hash": "6a07e08",
+  "commits": ["82603fe"],
+  "moments": [
+    {
+      "id": "20260317-134200-001",
+      "moment_type": "code",
+      "problem": "PostToolUse hook in Claude Code receives tool_response with exit_code=None for successful Bash commands, not exit_code=0. The post_commit_capture.py script checked 'if exit_code != 0' which evaluates to True when exit_code is None (since None != 0 is True in Python), causing the script to silently skip every successful commit.",
+      "symptom": "Hook fired (confirmed via sentinel file) but pending_moments.jsonl was never written. Script exited early on the exit_code check.",
+      "root_cause": "Claude Code's PostToolUse hook payload uses 'noOutputExpected' and 'interrupted' fields instead of a numeric exit_code. The exit_code field is None for successful commands. The original check 'exit_code != 0' treated None as failure.",
+      "difficulty": "hard",
+      "why_hard": "Required systematic debugging: first confirming the hook fired (sentinel), then logging the full stdin JSON to discover the None exit_code. The Claude Code hook documentation examples show exit_code as an integer, so the None value was unexpected.",
+      "files": [".claude/hooks/post_commit_capture.py"],
+      "function": "main",
+      "commit_before": "b7ebe57",
+      "commit_after": "82603fe",
+      "extractable": true,
+      "tags": ["python", "claude-code", "hooks", "bug-fix"],
+      "task_group_id": "post-commit-hook-exit-code"
+    }
+  ]
+}

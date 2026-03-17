@@ -62,6 +62,12 @@ Each moment needs enough context for a 9B model to understand it.
 - **problem**: 2-4 sentences. What was broken or needed? Be concrete — "CrossEntropyLoss returns NaN when all labels are -100" not "fixed a loss bug."
 - **difficulty**: `hard` or `easy`
 - **why_hard** or **why_easy**: 1-2 sentences explaining the rating.
+- **quality**: 1-5 integer rating of the training data quality (not problem difficulty):
+  - **5**: Focused code fix with real before/after code, specific error message, clear root cause
+  - **4**: Good code or reasoning, minor gaps in context
+  - **3**: Decent but broad — multiple changes or partly prose solution
+  - **2**: Weak context or vague problem statement
+  - **1**: Barely useful — keep as filler only
 - **tags**: Domain tags (python, machine-learning, config, etc.)
 - **task_group_id**: Kebab-case group ID. Moments from the same logical task share a group.
 
@@ -111,6 +117,7 @@ Write a single JSON file with all moments:
       "root_cause": "<why it happened>",
       "difficulty": "hard",
       "why_hard": "<explanation>",
+      "quality": 5,
       "files": ["src/engine/data_prep.py"],
       "function": "apply_domain_cap",
       "commit_before": "<hash where buggy code exists>",
@@ -125,6 +132,7 @@ Write a single JSON file with all moments:
       "problem": "<what question/decision needed to be resolved>",
       "difficulty": "hard",
       "why_hard": "<explanation>",
+      "quality": 4,
       "context_notes": "<full reasoning: what was investigated, evidence gathered, alternatives considered and rejected with reasons, final decision and rationale. Write as much as needed — this IS the training content.>",
       "resolution_type": "research_finding",
       "files": [],

@@ -7,7 +7,7 @@ A hook fires after every `git commit` and logs the commit to `.claude/hooks/pend
 1. Check if `.claude/hooks/pending_moments.jsonl` exists and has new entries
 2. For each pending commit, write a learnable moment annotation:
    - Was this commit trivial (typo, formatting, boilerplate)? If so, skip it.
-   - If non-trivial: write the moment annotation (problem, symptom, root_cause, difficulty, files, function, commit_before, commit_after, extractable) and append it to the running session file at `raw_sessions/<today's date>.json`
+   - If non-trivial: write the moment annotation (problem, symptom, root_cause, difficulty, quality, files, function, commit_before, commit_after, extractable) and append it to the running session file at `raw_sessions/<today's date>.json`
    - Use `git log --oneline -2` to get the commit_before (parent) and commit_after (this commit)
    - Use `git log --oneline -- <file>` to verify the file existed before this commit (if not, mark extractable=false)
 3. Clear the pending entry after annotating

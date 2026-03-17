@@ -152,6 +152,12 @@ def compute_priority(exp: dict) -> float:
         score += 0.3
     # "easy" gets no boost — serves as anchor data
 
+    # Claude's data quality rating (1-5, higher = better training data)
+    quality = exp.get("quality")
+    if quality is not None:
+        # Scale 1-5 to 0.0-0.2 boost (quality 3 = neutral, 5 = +0.2, 1 = -0.1)
+        score += (quality - 3) * 0.05
+
     # Detector risk (if available from calibrate.py)
     detector_risk = exp.get("_detector_risk", 0.0)
     score += PRIORITY_WEIGHTS["detector_risk"] * detector_risk

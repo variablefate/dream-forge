@@ -156,6 +156,7 @@ class Experiment(BaseModel):
     tags: list[str] = Field(default_factory=list)  # domain tags (python, android, web, etc.)
     confidence: ConfidenceTier = ConfidenceTier.INFERRED
     difficulty: Optional[str] = None  # "hard" | "easy" — Claude's estimate at capture time
+    quality: Optional[int] = None     # 1-5 — Claude's data quality rating (5=focused code fix with real context, 1=vague/broad)
 
     # Memory governance
     retrieval_count: int = 0
