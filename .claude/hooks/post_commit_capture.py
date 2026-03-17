@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 def main():
     raw = sys.stdin.read()
+
     if not raw.strip():
         return
 
@@ -22,9 +23,12 @@ def main():
 
     response = data.get("tool_response", {})
     stdout = response.get("stdout", "")
-    exit_code = response.get("exit_code", 1)
-
-    if exit_code != 0 or not stdout:
+    # exit_code may be None in PostToolUse (tool succeeded if hook fired)
+    # Only skip if explicitly non-zero
+    exit_code = response.get("exit_code")
+    if exit_code is not None and exit_code != 0:
+        return
+    if not stdout:
         return
 
     # Extract commit hash from output like "[master abc1234] message"
