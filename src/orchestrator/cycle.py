@@ -310,22 +310,8 @@ def run_cycle(config: CycleConfig) -> CycleResult:
                     dream_clouds.extend(structured_clouds)
             result.dream_clouds = dream_clouds
 
-            # Step 4: COMPARE
-            reference = experiment.get("reference_solution", "")
-            if reference:
-                result.wake_comparison = compare_outputs(
-                    model, tokenizer, wake.text, reference, experiment
-                )
-                dream_cmps: list[CompareResult] = []
-                for cloud in dream_clouds:
-                    dream_cmps.extend(
-                        compare_dream_cloud(
-                            model, tokenizer, cloud, reference, experiment
-                        )
-                    )
-                result.dream_comparisons = dream_cmps
-
-            # Step 5: CALIBRATE
+            # Step 4: CALIBRATE (moved before compare — Tier 1a needs detector_risk)
+            wake_risk = 0.5  # neutral default if no probe
             if probe is not None:
                 cal = calibrate_experiment(
                     model,
@@ -337,6 +323,25 @@ def run_cycle(config: CycleConfig) -> CycleResult:
                 )
                 result.calibration = cal
                 calibration_results[exp_id] = cal
+                wake_risk = cal.wake_risk
+
+            # Step 5: COMPARE (with detector_risk for Tier 1a scoring)
+            reference = experiment.get("reference_solution", "")
+            if reference:
+                result.wake_comparison = compare_outputs(
+                    model, tokenizer, wake.text, reference, experiment,
+                    detector_risk=wake_risk,
+                )
+                # Dream comparisons skip execution (too slow for N samples)
+                dream_cmps: list[CompareResult] = []
+                for cloud in dream_clouds:
+                    dream_cmps.extend(
+                        compare_dream_cloud(
+                            model, tokenizer, cloud, reference, experiment,
+                            skip_self_judge=True,
+                        )
+                    )
+                result.dream_comparisons = dream_cmps
 
             # Step 6: CONFIDENCE
             if result.calibration is not None and scorer is not None:

@@ -47,36 +47,106 @@ def _embedding_similarity(text_a: str, text_b: str) -> float:
 
 # ── Tier 1a: Executable verification ──────────────────────────────────────────
 
-def _tier_1a_verify(experiment: dict, prediction: str) -> CompareResult | None:
-    """Run tests on the prediction if possible. Returns result or None.
+def _tier_1a_verify(
+    experiment: dict, prediction: str, detector_risk: float = 0.5,
+) -> CompareResult | None:
+    """Run the prediction in a git worktree and verify with tests + detector.
 
-    NOTE: Tier 1a requires actually executing the prediction against tests.
-    The original experiment's test_results tell us about the REFERENCE, not
-    the model's prediction. Until code execution is implemented, this always
-    returns None (falling through to Tier 2).
+    Uses verify.py to: create worktree at commit_before, apply prediction,
+    check syntax/imports/tests, combine with detector confidence.
 
-    TODO: Implement code execution to verify predictions against tests.
+    Returns CompareResult if verification was possible, None if the experiment
+    lacks the fields needed for execution (no target file, no commit).
     """
-    # Cannot verify the prediction without code execution.
-    # The experiment's test_results are for the reference solution, not
-    # for whatever the model just generated. Returning those would give
-    # every experiment with passing tests a free "correct" regardless of
-    # what the model actually said.
-    return None
+    from src.engine.verify import verify_wake_output, VERIFICATION_THRESHOLD
+
+    # Need pre_solution_context with a file path and a commit to check out
+    pre_ctx = experiment.get("pre_solution_context") or []
+    if not pre_ctx:
+        return None
+    first_ctx = pre_ctx[0] if isinstance(pre_ctx[0], dict) else {}
+    target_file = first_ctx.get("path", "")
+    commit = experiment.get("git_start_hash", experiment.get("repo_hash", ""))
+
+    if not target_file or not commit:
+        return None
+
+    # Only attempt for code_change experiments
+    if experiment.get("resolution_type") not in ("code_change", None):
+        return None
+
+    try:
+        result = verify_wake_output(
+            wake_text=prediction,
+            experiment=experiment,
+            detector_risk=detector_risk,
+            run_tests=True,
+        )
+    except Exception:
+        return None  # verification failed, fall through to Tier 2
+
+    # Map composite score to classification
+    if result.passed and result.tests_pass is True:
+        classification = "correct"
+    elif result.passed and result.tests_pass is None:
+        classification = "partially_correct"  # passed on syntax+detector but no tests
+    elif result.syntax_ok and result.imports_ok:
+        classification = "partially_correct"  # builds but tests fail
+    else:
+        classification = "incorrect"
+
+    return CompareResult(
+        classification=classification,
+        tier="tier_1a",
+        confidence=result.score,
+        details={
+            "verification_score": result.score,
+            "syntax_ok": result.syntax_ok,
+            "imports_ok": result.imports_ok,
+            "tests_pass": result.tests_pass,
+            "detector_confidence": result.detector_confidence,
+            "test_output": result.test_output[:300],
+            "checks_run": result.checks_run,
+            "error": result.error,
+        },
+    )
 
 
-# ── Tier 1b: Build/lint artifacts ─────────────────────────────────────────────
+# ── Tier 1b: Build/lint verification ─────────────────────────────────────────
 
-def _tier_1b_verify(experiment: dict) -> CompareResult | None:
-    """Check build/lint results if available.
+def _tier_1b_verify(
+    experiment: dict, prediction: str,
+) -> CompareResult | None:
+    """Quick syntax + import check without full test execution.
 
-    NOTE: Same issue as Tier 1a — the experiment's build_results and
-    lint_results are for the REFERENCE solution, not the model's prediction.
-    Until we can build/lint the prediction, this returns None.
-
-    TODO: Implement prediction build/lint verification.
+    Lighter than Tier 1a — no git worktree, no test run. Just checks
+    if the prediction compiles and the module imports cleanly.
+    Falls through to Tier 2 if the experiment lacks needed fields.
     """
-    return None
+    from src.engine.verify import _check_syntax, _detect_language
+
+    pre_ctx = experiment.get("pre_solution_context") or []
+    if not pre_ctx:
+        return None
+    first_ctx = pre_ctx[0] if isinstance(pre_ctx[0], dict) else {}
+    target_file = first_ctx.get("path", "")
+
+    if not target_file:
+        return None
+
+    language = _detect_language(target_file)
+    syntax_ok = _check_syntax(prediction, language)
+
+    if not syntax_ok:
+        return CompareResult(
+            classification="incorrect",
+            tier="tier_1b",
+            confidence=0.1,
+            details={"syntax_ok": False, "language": language},
+        )
+
+    # Syntax passes but we can't run full tests — partial signal
+    return None  # fall through to Tier 2 for more info
 
 
 # ── Tier 3: Qwen self-judge ───────────────────────────────────────────────────
@@ -153,11 +223,20 @@ def compare_outputs(
     reference: str,
     experiment: dict,
     skip_self_judge: bool = False,
+    detector_risk: float = 0.5,
+    skip_execution: bool = False,
 ) -> CompareResult:
     """Compare a prediction against the reference solution.
 
     Tries tiers in order (strongest first), returns the first available result.
+    Tier 1a (execution + detector) is tried first if not skipped.
     Tier 2 (embedding similarity) is always computed as a baseline.
+
+    Args:
+        detector_risk: Hallucination risk from calibrate.py (0-1). Used by
+                      Tier 1a's composite score. Default 0.5 (neutral).
+        skip_execution: If True, skip Tier 1a/1b (no git worktree, no tests).
+                       Useful for dream samples where execution is too slow.
     """
     # Guard: empty prediction or reference means we can't compare meaningfully
     if not prediction or not prediction.strip():
@@ -169,15 +248,16 @@ def compare_outputs(
             classification="partially_correct", tier="tier_2", confidence=0.0,
             details={"error": "empty reference"})
 
-    # Tier 1a: executable verification
-    t1a = _tier_1a_verify(experiment, prediction)
-    if t1a is not None:
-        return t1a
+    if not skip_execution:
+        # Tier 1a: executable verification (worktree + tests + detector)
+        t1a = _tier_1a_verify(experiment, prediction, detector_risk)
+        if t1a is not None:
+            return t1a
 
-    # Tier 1b: build/lint
-    t1b = _tier_1b_verify(experiment)
-    if t1b is not None:
-        return t1b
+        # Tier 1b: syntax check (lightweight, no worktree)
+        t1b = _tier_1b_verify(experiment, prediction)
+        if t1b is not None:
+            return t1b
 
     # Tier 2: embedding similarity (always available)
     similarity = _embedding_similarity(prediction, reference)
@@ -216,11 +296,18 @@ def compare_outputs(
 def compare_dream_cloud(
     model, tokenizer, dream_cloud, reference: str, experiment: dict,
     skip_self_judge: bool = True,
+    skip_execution: bool = True,
 ) -> list[CompareResult]:
-    """Compare all samples in a dream cloud against reference."""
+    """Compare all samples in a dream cloud against reference.
+
+    Defaults to skip_execution=True because running Tier 1a verification
+    on every dream sample (N=4 × worktree + tests) would be too slow.
+    Dream comparisons use Tier 2 (embedding) + Tier 3 (self-judge) only.
+    """
     return [
         compare_outputs(
             model, tokenizer, sample.text, reference, experiment,
-            skip_self_judge=skip_self_judge)
+            skip_self_judge=skip_self_judge,
+            skip_execution=skip_execution)
         for sample in dream_cloud.samples
     ]
