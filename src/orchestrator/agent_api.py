@@ -179,6 +179,7 @@ def cmd_results(args) -> None:
 
     if not results_dir.exists():
         _json_out({"cycles": [], "total": 0})
+        return  # _json_out calls sys.exit, but explicit return for readability
 
     if args.cycle_id:
         path = results_dir / f"{args.cycle_id}.json"

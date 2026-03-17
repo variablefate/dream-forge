@@ -250,6 +250,17 @@ def run_cycle(config: CycleConfig) -> CycleResult:
     experiments = _load_experiments(config.data_dir)
     console.print(f"  Loaded {len(experiments)} experiments")
 
+    # Warn about failed staging dirs from previous cycles
+    if config.output_dir.exists():
+        failed_staging = [
+            d for d in config.output_dir.iterdir()
+            if d.is_dir() and d.name.endswith("_staging") and (d / "_TRAINING_FAILED").exists()
+        ]
+        for d in failed_staging:
+            console.print(
+                f"[yellow]Warning: previous failed staging dir: {d}[/yellow]"
+            )
+
     cycle_start = time.monotonic()
 
     # ------------------------------------------------------------------
@@ -427,10 +438,18 @@ def run_cycle(config: CycleConfig) -> CycleResult:
                 training_ok = train(train_config)
             except Exception as e:
                 training_ok = False
-                console.print(
-                    f"[red]Training failed: {e}[/red]", file=sys.stderr
-                )
+                console.print(f"[red]Training failed: {e}[/red]")
                 torch.cuda.empty_cache()
+
+            # Staging dir cleanup: keep on failure (with marker), clean on success
+            if staging_dir is not None and staging_dir.exists():
+                if training_ok:
+                    shutil.rmtree(staging_dir)
+                else:
+                    (staging_dir / "_TRAINING_FAILED").write_text(
+                        f"Training failed at {datetime.now().isoformat()}\n",
+                        encoding="utf-8",
+                    )
         else:
             console.print(
                 f"[yellow]Skipping training: {skipped_training_reason}[/yellow]"
@@ -597,7 +616,10 @@ def main() -> None:
 
     try:
         result = run_cycle(config)
-        sys.exit(0 if result.failed_experiments == 0 else 1)
+        sys.exit(
+            0 if (result.training_ok is not False and result.successful_experiments > 0)
+            else 1
+        )
     except Exception as e:
         console.print(f"[bold red]Cycle failed: {e}[/bold red]")
         sys.exit(1)
