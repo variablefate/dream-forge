@@ -281,6 +281,54 @@ def build_experiment(
     }
 
 
+def build_reasoning_experiment(moment: dict, session: dict) -> dict:
+    """Build an experiment from a reasoning moment — no git extraction.
+
+    The context_notes field IS the reference_solution. The problem field
+    is the question/decision that was investigated.
+    """
+    return {
+        "id": str(uuid.uuid4()),
+        "source": "claude",
+        "timestamp": datetime.now().isoformat(),
+        "project": "dream-forge",
+        "problem": moment["problem"],
+        "breakdown": [],
+        "proposed_solutions": [],
+        "review_issues": [],
+        "final_plan": "",
+        "status": "resolved",
+        "task_group_id": moment.get("task_group_id", "unknown"),
+        "superseded": False,
+        "reference_solution": moment["context_notes"],
+        "resolution_type": moment.get("resolution_type", "research_finding"),
+        "pre_solution_context": None,
+        "post_solution_artifacts": None,
+        "repo_hash": session.get("repo_hash", ""),
+        "repo_dirty": False,
+        "git_diff": None,
+        "git_start_hash": session.get("git_start_hash", ""),
+        "test_results": None,
+        "build_results": None,
+        "lint_results": None,
+        "error_logs": None,
+        "commands_run": None,
+        "error_output": None,
+        "constraints": None,
+        "resolves_experiment_id": None,
+        "synthetic": False,
+        "generator": None,
+        "parent_experiment_id": None,
+        "generation_depth": 0,
+        "tags": moment.get("tags", ["research"]),
+        "confidence": "inferred",
+        "difficulty": moment.get("difficulty", None),
+        "retrieval_count": 0,
+        "positive_outcome_count": 0,
+        "last_retrieved": None,
+    }
+
+
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def process_session(
@@ -308,13 +356,30 @@ def process_session(
 
     console.print(f"[bold]Processing {len(moments)} moments from {session_path.name}[/bold]")
 
-    # Try deterministic extraction first (fast, no GPU)
+    # Separate code moments from reasoning moments
     model = None
     tokenizer = None
     experiments = []
     needs_model = []
 
     for moment in moments:
+        moment_type = moment.get("moment_type", "code")
+
+        # Reasoning moments: pass through directly (no git extraction needed)
+        if moment_type == "reasoning":
+            context_notes = moment.get("context_notes", "")
+            if not context_notes:
+                console.print(
+                    f"  [red]DROPPED[/red] [{moment.get('difficulty', '?')}] "
+                    f"{moment.get('task_group_id', '?')} — reasoning moment with empty context_notes")
+                continue
+            experiments.append(build_reasoning_experiment(moment, session))
+            console.print(
+                f"  [green]OK[/green] [{moment.get('difficulty', '?')}] "
+                f"{moment.get('task_group_id', '?')} — reasoning moment")
+            continue
+
+        # Code moments: deterministic git extraction
         extracted = deterministic_extract(moment)
         if extracted and extracted.get("after_code"):
             experiments.append(build_experiment(

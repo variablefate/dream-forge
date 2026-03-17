@@ -78,6 +78,30 @@
       "extractable": false,
       "tags": ["python", "bug-fix"],
       "task_group_id": "abstain-rate-ceiling"
+    },
+    {
+      "id": "20260316-230000-006",
+      "moment_type": "reasoning",
+      "problem": "The other Claude window claimed Fix B was critical: add_generation_prompt=True injects <think> tags that cause a template prefix mismatch between the full conversation and prompt-only tokenization, silently masking the first 5-7 response tokens during training. Is this actually a bug?",
+      "difficulty": "hard",
+      "why_hard": "Required empirical testing with the actual Qwen3.5 tokenizer to verify — the claim was plausible and the reviewer was confident. Template behavior depends on the exact Jinja2 template in tokenizer_config.json which varies by model family.",
+      "context_notes": "Investigation: We ran the Qwen3.5 tokenizer with enable_thinking=False on both paths:\n\n1. Full conversation: [system, user, assistant] with enable_thinking=False, tokenize=False\n2. Prompt-only: [system, user] with enable_thinking=False, tokenize=False, add_generation_prompt=True\n\nResults:\n- Full text: '<|im_start|>system\\n...\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\nHere is the fix.<|im_end|>\\n'\n- Prompt text: '<|im_start|>system\\n...\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n'\n- full_text.startswith(prompt_text) = True\n\nThe empty <think>\\n\\n</think>\\n\\n block is injected CONSISTENTLY in both paths when enable_thinking=False. This is Qwen3.5's way of signaling 'don't think' — the empty block is a prefill token, not an artifact. The prompt boundary lands exactly at 'Here' (the start of reference_solution).\n\nConclusion: Fix B is a FALSE ALARM. The template is consistent. The reviewer's claim that prompt_len is inflated by 5-7 tokens is wrong — those tokens exist in both tokenizations and are correctly masked.\n\nKey lesson: Always verify template behavior empirically with the actual tokenizer before assuming. Different model families handle thinking tokens differently. Qwen3.5 with enable_thinking=False still injects the empty think block, unlike some other models that omit it entirely.",
+      "resolution_type": "research_finding",
+      "files": ["src/engine/tune.py"],
+      "tags": ["python", "machine-learning", "investigation"],
+      "task_group_id": "template-mismatch-investigation"
+    },
+    {
+      "id": "20260316-230000-007",
+      "moment_type": "reasoning",
+      "problem": "Grok suggested 4 'bleeding edge 2026' techniques for our SFT data pipeline: environment-framed generation loops, principled mixing with rephrasing, recursive context-split-tree, and self-critique distillation. Which are worth adopting for our constraints (small personal dataset, detector-only path, teacher-guided distillation, 2048 token cap)?",
+      "difficulty": "hard",
+      "why_hard": "Required evaluating each technique against our specific design constraints. The suggestions sounded sophisticated but several violated core design principles. Distinguishing genuine improvements from hype required understanding both the techniques and our architecture deeply.",
+      "context_notes": "Evaluated 4 techniques against project constraints:\n\n1. Environment-framed generation loops: ALREADY IN THE PLAN. The wake -> dream -> compare -> detector-prioritized replay -> LoRA cycle IS this pattern. The 'quick win' filter (detector_risk > 0.7 AND embedding_cos < 0.75) is just a concrete threshold for our existing C.7.1 priority formula. No new module needed.\n\n2. Principled mixing + rephrasing: REJECTED. Solution-side rephrasing is dangerous — the SFT target is Claude/Codex's verified answer, and rephrasing it with Qwen 9B risks introducing subtle errors into training targets. Problem-side rephrasing has minor merit but the bottleneck at 300-500 examples is task coverage, not phrasing variety. Also, Grok suggested using all-MiniLM-L6-v2 for paraphrasing — it's an embedding model, not generative. This revealed incomplete understanding of our toolchain.\n\n3. Recursive context-split-tree: REJECTED. Splitting one experiment's context into sub-problems creates unverified training data — reference_solution solves the ORIGINAL problem, not the sub-problems. The model would train on Qwen's unverified answers to its own sub-questions, which is exactly the self-training trap our design avoids.\n\n4. Self-critique distillation: REJECTED. Directly contradicts the plan's core principle: 'SFT target: reference_solution — NOT Qwen's own outputs.' Having a 71.7%-accurate detector guide self-correction, then training on the self-corrected output, compounds errors.\n\nAdopted from both rounds: curriculum sort by priority score (trivial one-liner), embedding spread as diagnostic metric, concrete priority thresholds (detector_risk > 0.7 + cos_sim < 0.75).\n\nKey lesson: Evaluate external suggestions against your specific design invariants, not in the abstract. Techniques that are state-of-the-art for general self-improvement can violate the specific constraints that make your pipeline trustworthy.",
+      "resolution_type": "research_finding",
+      "files": ["src/engine/data_prep.py"],
+      "tags": ["machine-learning", "architecture", "evaluation"],
+      "task_group_id": "grok-technique-evaluation"
     }
   ]
 }
