@@ -37,10 +37,24 @@ console = Console()
 DEFAULT_PORT = 8081
 DEFAULT_N = 4
 DETECTOR_PROBE_PATH = Path("models/detector_probe.pkl")
+FAST_SCORER_PATH = Path("models/fast_scorer.pkl")
+
+# Adaptive 3-tier thresholds (validated on 50-question benchmark)
+# risk < TIER1 → serve pass@1 immediately
+# risk TIER1-TIER2 → best-of-2 with CETT
+# risk > TIER2 → best-of-4 with CETT
+ADAPTIVE_TIER1 = 0.2   # below this: confident, serve fast
+ADAPTIVE_TIER2 = 0.4   # below this: slightly uncertain, best-of-2
 
 
-def create_app(model, tokenizer, bon, default_n: int = 1):
-    """Create the HTTP app with the completions endpoint."""
+def create_app(model, tokenizer, bon, fast_scorer=None, default_n: int = 1, adaptive: bool = True):
+    """Create the HTTP app with the completions endpoint.
+
+    If adaptive=True and fast_scorer is provided, uses 3-tier adaptive N:
+      risk < 0.2 → serve pass@1 (fast)
+      risk 0.2-0.4 → best-of-2 with CETT
+      risk > 0.4 → best-of-4 with CETT
+    """
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
     class CompletionHandler(BaseHTTPRequestHandler):
@@ -97,14 +111,39 @@ def create_app(model, tokenizer, bon, default_n: int = 1):
             try:
                 t0 = time.monotonic()
 
-                if n_samples <= 1:
+                # Adaptive 3-tier: generate pass@1, fast-score, escalate if needed
+                if adaptive and fast_scorer and n_samples > 1:
+                    # Step 1: Generate pass@1
                     result = bon.generate(
                         model, tokenizer, query,
                         n=1, temperature=temperature, max_new_tokens=max_tokens)
+
+                    # Step 2: Fast-score the response (~1ms)
+                    fast_risk = fast_scorer.score(result.text) if result.text.strip() else 1.0
+
+                    # Step 3: Decide whether to escalate
+                    if fast_risk < ADAPTIVE_TIER1:
+                        # Confident — serve immediately
+                        adaptive_tier = "fast_serve"
+                    elif fast_risk < ADAPTIVE_TIER2:
+                        # Slightly uncertain — best-of-2
+                        result = bon.generate(
+                            model, tokenizer, query,
+                            n=2, temperature=temperature, max_new_tokens=max_tokens)
+                        adaptive_tier = "best_of_2"
+                    else:
+                        # Uncertain — full best-of-N
+                        result = bon.generate(
+                            model, tokenizer, query,
+                            n=n_samples, temperature=temperature, max_new_tokens=max_tokens)
+                        adaptive_tier = f"best_of_{n_samples}"
                 else:
+                    # Non-adaptive: use fixed N
                     result = bon.generate(
                         model, tokenizer, query,
                         n=n_samples, temperature=temperature, max_new_tokens=max_tokens)
+                    fast_risk = None
+                    adaptive_tier = None
 
                 elapsed = time.monotonic() - t0
             except Exception as e:
@@ -112,6 +151,18 @@ def create_app(model, tokenizer, bon, default_n: int = 1):
                 return
 
             # OpenAI-compatible response format
+            df_extra = {
+                "strategy": result.strategy,
+                "confidence": result.confidence,
+                "n_generated": result.n_generated,
+                "hedged": result.hedged,
+                "elapsed_seconds": elapsed,
+            }
+            if adaptive_tier:
+                df_extra["adaptive_tier"] = adaptive_tier
+            if fast_risk is not None:
+                df_extra["fast_risk"] = fast_risk
+
             response = {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
                 "object": "chat.completion",
@@ -126,18 +177,11 @@ def create_app(model, tokenizer, bon, default_n: int = 1):
                     "finish_reason": "stop",
                 }],
                 "usage": {
-                    "prompt_tokens": 0,  # not tracked
+                    "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,
                 },
-                # dream-forge extensions
-                "dream_forge": {
-                    "strategy": result.strategy,
-                    "confidence": result.confidence,
-                    "n_generated": result.n_generated,
-                    "hedged": result.hedged,
-                    "elapsed_seconds": elapsed,
-                },
+                "dream_forge": df_extra,
             }
 
             self._send_json(200, response)
@@ -191,11 +235,15 @@ def main():
                         help=f"Default best-of-N samples (default: {DEFAULT_N})")
     parser.add_argument("--probe", type=Path, default=DETECTOR_PROBE_PATH,
                         help="Path to detector probe .pkl")
+    parser.add_argument("--no-adaptive", action="store_true",
+                        help="Disable adaptive N (always use fixed --n)")
     args = parser.parse_args()
 
     # Load model
     console.print("[bold]dream-forge server[/bold]")
-    console.print(f"  Port: {args.port} | Default N: {args.n}")
+    adaptive = not args.no_adaptive
+    console.print(f"  Port: {args.port} | Default N: {args.n} | "
+                  f"Adaptive: {'ON' if adaptive else 'OFF'}")
 
     from src.engine.model_loader import load_model
     from src.runtime.best_of_n import BestOfN
@@ -206,16 +254,37 @@ def main():
     console.print("  Loading detector probe...", style="dim")
     bon = BestOfN.from_pretrained(args.probe)
 
+    # Load fast scorer for adaptive routing
+    fast_scorer = None
+    if adaptive and FAST_SCORER_PATH.exists():
+        from src.runtime.fast_scorer import FastScorer
+        fast_scorer = FastScorer.from_pretrained(FAST_SCORER_PATH)
+        console.print(f"  Fast scorer loaded (adaptive tiers: "
+                      f"<{ADAPTIVE_TIER1} serve, "
+                      f"<{ADAPTIVE_TIER2} best-of-2, "
+                      f"else best-of-{args.n})", style="dim")
+    elif adaptive:
+        console.print("  [yellow]Fast scorer not found — adaptive disabled[/yellow]")
+        adaptive = False
+
     # Create and run server
-    HTTPServer, Handler = create_app(model, tokenizer, bon, default_n=args.n)
+    HTTPServer, Handler = create_app(
+        model, tokenizer, bon,
+        fast_scorer=fast_scorer,
+        default_n=args.n,
+        adaptive=adaptive,
+    )
     server = HTTPServer(("127.0.0.1", args.port), Handler)
 
     console.print(f"\n[bold green]Server running at http://localhost:{args.port}[/bold green]")
     console.print(f"  POST /v1/chat/completions  (OpenAI-compatible)")
     console.print(f"  GET  /v1/models")
     console.print(f"  GET  /health")
-    console.print(f"\n  Client example:")
-    console.print(f'    client = OpenAI(base_url="http://localhost:{args.port}/v1", api_key="local")')
+    if adaptive:
+        console.print(f"\n  [bold]Adaptive 3-tier mode:[/bold]")
+        console.print(f"    risk < {ADAPTIVE_TIER1}: serve pass@1 (~3s)")
+        console.print(f"    risk {ADAPTIVE_TIER1}-{ADAPTIVE_TIER2}: best-of-2 + CETT (~50s)")
+        console.print(f"    risk > {ADAPTIVE_TIER2}: best-of-{args.n} + CETT (~190s)")
     console.print(f"\n  Press Ctrl+C to stop.\n")
 
     try:
