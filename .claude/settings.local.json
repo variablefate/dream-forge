@@ -11,7 +11,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_commit_capture.py\""
+            "command": "python .claude/hooks/post_commit_capture.py"
           }
         ]
       }
