@@ -1,0 +1,73 @@
+{
+  "session_id": "20260316-230000",
+  "repo_hash": "8f92fea",
+  "git_start_hash": "5d821fa",
+  "commits": ["5d821fa", "45edeb5", "27c81c2", "70aead0", "7703939", "8f92fea"],
+  "moments": [
+    {
+      "id": "20260316-230000-001",
+      "problem": "tune.py tokenizes the prompt-only text (system+user with add_generation_prompt=True) WITHOUT truncation at line 297. When the prompt exceeds 2048 tokens, prompt_len becomes 3024 while input_ids is truncated to 2048. labels[:3024] = -100 masks ALL labels. CrossEntropyLoss with all-ignored targets computes 0/0 in mean reduction, returning NaN. NaN propagates through backward() and permanently corrupts model weights.",
+      "symptom": "Training loss becomes NaN after encountering a long-context experiment. Model weights corrupted — all subsequent training steps produce NaN.",
+      "root_cause": "tokenizer(prompt_text, return_tensors='pt') on line 297 had no truncation=True, max_length=MAX_SEQ_LENGTH. The full text tokenization on line 282 truncates, but the prompt-only tokenization doesn't, so prompt_len can exceed the truncated input length.",
+      "difficulty": "hard",
+      "why_hard": "Silent corruption — loss looks fine on normal examples. Only manifests on rare long-context experiments. The NaN corrupts weights permanently so all subsequent steps fail too, making the root cause hard to trace back to the specific example.",
+      "files": ["src/engine/tune.py"],
+      "function": "load_training_data",
+      "commit": "5d821fa",
+      "tags": ["python", "machine-learning", "bug-fix"],
+      "task_group_id": "tune-nan-loss-guard"
+    },
+    {
+      "id": "20260316-230000-002",
+      "problem": "best_of_n.py _select() method: when ALL N responses are empty (text='') AND all have hallucination_risk > hedge_threshold, the hedge trigger fires and returns HEDGE_PREFIX + best.text. Since best.text is empty, the user sees 'I'm not fully confident in this answer. Here's my best attempt, but please verify: ' with nothing after it — a dangling promise with no content.",
+      "symptom": "User gets a hedge prefix saying 'here's my best attempt' followed by nothing.",
+      "root_cause": "No guard for empty best.text before prepending HEDGE_PREFIX. The all-empty case is rare (requires N consecutive empty generations, each scored risk > 0.7) but possible under OOM or very short max_tokens.",
+      "difficulty": "easy",
+      "why_easy": "Once identified, the fix is a simple conditional: check if best.text.strip() before prepending the prefix.",
+      "files": ["src/runtime/best_of_n.py"],
+      "function": "_select",
+      "commit": "5d821fa",
+      "tags": ["python", "bug-fix"],
+      "task_group_id": "bestofn-empty-hedge"
+    },
+    {
+      "id": "20260316-230000-003",
+      "problem": "calibrate.py calibrate_experiment() uses experiment.get('problem', '') as the query for CETT extraction. But during wake/dream inference, the model saw the FULL user message: problem + error_output + pre_solution_context. The detector probe was trained on activations from the full input, so scoring with a truncated query (problem only, missing error context and code snippets) produces different activation patterns and degrades probe accuracy on real workflow data.",
+      "symptom": "Detector probe accuracy on workflow experiments was lower than expected from TriviaQA validation (where questions are simple and have no context).",
+      "root_cause": "CETT features depend on the full input text. The query used for scoring must match what the model actually processed during inference. wake_result.query stores the full user message but calibrate_experiment wasn't using it.",
+      "difficulty": "hard",
+      "why_hard": "No error or crash — just silently degraded accuracy. Required understanding the CETT activation extraction pipeline end-to-end to realize the query text matters for feature extraction.",
+      "files": ["src/engine/calibrate.py"],
+      "function": "calibrate_experiment",
+      "commit": "5d821fa",
+      "tags": ["python", "machine-learning", "bug-fix"],
+      "task_group_id": "calibrate-query-mismatch"
+    },
+    {
+      "id": "20260316-230000-004",
+      "problem": "data_prep.py apply_domain_cap() caps any single domain at 40% of total examples. With only 3 experiments all tagged 'python', max_per_domain = int(3 * 0.40) = 1, silently dropping 2 of 3 training examples. The data_prep --stats output showed '1 eligible' when all 3 passed every other filter. The function works correctly at 300+ examples but destroys small datasets during cold-start bootstrapping.",
+      "symptom": "data_prep --stats reported 1 eligible example when 3 valid resolved experiments existed and passed all completeness gates.",
+      "root_cause": "The 40% domain cap is designed for scale (prevent Python from dominating at 300+ examples) but int(3 * 0.40) = 1 at cold-start. No minimum dataset size guard to bypass the cap when data is scarce.",
+      "difficulty": "hard",
+      "why_hard": "Silent data loss — no error, no warning. Required tracing through the full filtering pipeline (resolved check → superseded → synthetic → completeness → split → domain cap → token budget) to find which step dropped the examples.",
+      "files": ["src/engine/data_prep.py"],
+      "function": "apply_domain_cap",
+      "commit": "7703939",
+      "tags": ["python", "data-pipeline", "bug-fix"],
+      "task_group_id": "domain-cap-cold-start"
+    },
+    {
+      "id": "20260316-230000-005",
+      "problem": "abstain.py check_abstain_regression() was supposed to guard against over-hedging by checking if the abstain rate exceeds 15%. But the constant MAX_ABSTAIN_RATE=0.15 (described as 'roll back if abstain rate exceeds this' — an absolute ceiling) was used as max_rate_increase (a per-cycle delta check). If the abstain rate grows 5pp each cycle (0.05 → 0.10 → 0.15 → 0.20), each individual increase (0.05) is under 0.15, so the guard never fires. The model can accumulate a 50%+ abstain rate without triggering rollback.",
+      "symptom": "No immediate symptom — would only manifest after multiple training cycles where the abstain rate slowly climbs.",
+      "root_cause": "Parameter name mismatch: the constant meant 'absolute max rate' but was passed as 'max rate increase'. The comparison checked delta instead of absolute value.",
+      "difficulty": "hard",
+      "why_hard": "Logic error that only manifests across multiple cycles. The code looks correct at a glance — the naming (MAX_ABSTAIN_RATE used as max_rate_increase) obscures the semantic mismatch.",
+      "files": ["src/engine/abstain.py"],
+      "function": "check_abstain_regression",
+      "commit": "5d821fa",
+      "tags": ["python", "bug-fix"],
+      "task_group_id": "abstain-rate-ceiling"
+    }
+  ]
+}
