@@ -201,6 +201,11 @@ def apply_domain_cap(
     if not examples or cap >= 1.0:
         return examples
 
+    # Don't cap tiny datasets — the cap prevents single-domain dominance
+    # at scale, but at <20 examples it just throws away scarce data
+    if len(examples) < 20:
+        return examples
+
     # Count primary domain per example (first tag)
     domain_counts: Counter = Counter()
     for ex in examples:
