@@ -25,9 +25,23 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich.console import Console
+import io
 
-console = Console()
+# Use plain print instead of Rich for this module — Rich's legacy Windows
+# renderer crashes on Unicode characters in repo names/paths (cp1252 encoding)
+class _PlainConsole:
+    """Minimal console that avoids Rich's Windows encoding issues."""
+    def print(self, *args, style=None, **kwargs):
+        text = " ".join(str(a) for a in args)
+        # Strip Rich markup
+        import re
+        text = re.sub(r'\[/?[^\]]*\]', '', text)
+        try:
+            print(text, file=sys.stderr)
+        except UnicodeEncodeError:
+            print(text.encode('ascii', errors='replace').decode(), file=sys.stderr)
+
+console = _PlainConsole()
 
 REPOS_DIR = Path("data/oss_repos")
 SNIPPETS_DIR = Path("data/oss_snippets")
@@ -98,14 +112,14 @@ def fetch_starred_repos() -> list[dict]:
     result = subprocess.run(
         ["gh", "api", "user/starred", "--paginate",
          "--jq", '.[] | {full_name, clone_url: .clone_url, language, description, stargazers_count, size}'],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
     if result.returncode != 0:
         console.print(f"[red]Failed to fetch starred repos: {result.stderr}[/red]")
         return []
 
     repos = []
-    for line in result.stdout.strip().split("\n"):
+    for line in (result.stdout or "").strip().split("\n"):
         if line.strip():
             try:
                 repos.append(json.loads(line))
@@ -123,8 +137,8 @@ def clone_or_update_repo(repo: dict, repos_dir: Path) -> Path | None:
         # Already cloned — pull latest
         result = subprocess.run(
             ["git", "pull", "--ff-only"],
-            capture_output=True, text=True, timeout=60,
-            cwd=str(repo_path),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60, cwd=str(repo_path),
         )
         if result.returncode == 0:
             return repo_path
@@ -139,8 +153,8 @@ def clone_or_update_repo(repo: dict, repos_dir: Path) -> Path | None:
         env["GIT_SSL_NO_VERIFY"] = "1"
     result = subprocess.run(
         ["git", "clone", "--depth", "1", clone_url, str(repo_path)],
-        capture_output=True, text=True, timeout=120,
-        env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=120, env=env,
     )
     if result.returncode != 0:
         console.print(f"  [red]Failed to clone {repo['full_name']}[/red]")
