@@ -1,9 +1,13 @@
 {
   "session_id": "20260317-134200",
-  "repo_hash": "82603fe",
+  "repo_hash": "6ff09c4",
   "git_start_hash": "6a07e08",
   "commits": [
-    "82603fe"
+    "82603fe",
+    "a57bf88",
+    "52f6f22",
+    "bc90573",
+    "6ff09c4"
   ],
   "moments": [
     {
@@ -29,6 +33,73 @@
       ],
       "task_group_id": "post-commit-hook-exit-code",
       "quality": 4
+    },
+    {
+      "id": "20260317-134200-002",
+      "moment_type": "reasoning",
+      "problem": "The compare pipeline used embedding similarity as the primary classification signal. A response that correctly fixes a bug but takes a different approach than Claude would score low similarity and be classified as incorrect. How should we verify code correctness objectively, and how does the detector probe fit into verification?",
+      "difficulty": "hard",
+      "why_hard": "Required designing a multi-layer verification system that combines execution (objective) with detector confidence (probabilistic), handling multiple languages, sandboxing via git worktrees, and reordering the cycle pipeline so detector_risk is available during comparison.",
+      "quality": 4,
+      "context_notes": "Problem: compare.py classified wake outputs by embedding similarity to Claude's reference_solution. Threshold: >=0.85=correct, >=0.60=partial, <0.60=incorrect. But valid alternative solutions would score low and be thrown out as training data.\n\nSolution: 4-layer verification with composite scoring:\n  1. Syntax check (compile/parse) \u2014 language-agnostic via _detect_language\n  2. Build/import check (module loads) \u2014 uses project toolchain (pytest, jest, go build, cargo check)\n  3. Test execution (tests pass) \u2014 auto-detects test runner, runs in git worktree for isolation\n  4. Detector confidence (1 - hallucination_risk) \u2014 from CETT probe\n\nComposite score = syntax(0.1) + build(0.1) + tests(0.5) + detector(0.3). Threshold: 0.70 to pass.\n\nKey design decisions:\n- Tests weighted 0.5 (heaviest) because they're the most objective signal\n- Detector weighted 0.3 because it catches \"fluky passes\" where tests pass by coincidence\n- Git worktrees for isolation (not stash) \u2014 no risk of corrupting working tree\n- Dream samples skip execution (too slow for N=4 samples) \u2014 use embedding similarity only\n- cycle.py reordered: calibrate now runs BEFORE compare so detector_risk is available\n- Language detection supports Python, JS/TS, Go, Rust, Java/Kotlin, Ruby, with graceful degradation",
+      "resolution_type": "research_finding",
+      "files": [
+        "src/engine/verify.py",
+        "src/engine/compare.py",
+        "src/orchestrator/cycle.py"
+      ],
+      "tags": [
+        "python",
+        "architecture",
+        "verification"
+      ],
+      "task_group_id": "tier1a-verification-design"
+    },
+    {
+      "id": "20260317-134200-003",
+      "moment_type": "code",
+      "problem": "Best-of-4 inference with CETT detector scoring took 450 seconds (7.5 min) per query. The bottleneck was 4 sequential generate calls + 4 sequential CETT extraction forward passes = 8 full forward passes through the 9B model. Each CETT extraction required re-running the full prompt+response through the model with hooks to capture activations.",
+      "symptom": "API response time of 450s for best-of-4, vs 2.6s for pass@1. Unusable for interactive inference.",
+      "root_cause": "Sequential generation (4 separate calls) missed the opportunity to share the KV cache on the shared prompt. Sequential CETT extraction (4 separate forward passes) missed the opportunity to batch all 4 prompt+response texts into a single padded forward pass.",
+      "difficulty": "hard",
+      "why_hard": "Required understanding num_return_sequences for batched generation, attention_mask handling for padded batch CETT extraction, and the interaction between padding tokens and CETT mean-pooling.",
+      "quality": 4,
+      "files": [
+        "src/runtime/best_of_n.py"
+      ],
+      "function": "generate",
+      "commit_before": "52f6f22",
+      "commit_after": "bc90573",
+      "extractable": true,
+      "tags": [
+        "python",
+        "machine-learning",
+        "performance"
+      ],
+      "task_group_id": "bestofn-batched-optimization"
+    },
+    {
+      "id": "20260317-134200-004",
+      "moment_type": "code",
+      "problem": "The adaptive server fast_serve tier still ran CETT extraction (~30s) on the pass@1 response via bon.generate(n=1), even though the fast scorer already decided to serve immediately. This meant fast_serve was 30s instead of 3s \u2014 the whole point of the fast path was wasted.",
+      "symptom": "fast_serve tier queries took ~30s instead of ~3s in test results.",
+      "root_cause": "bon.generate(n=1) always runs CETT scoring internally. The adaptive server called it for the initial pass@1 before fast-scoring, but should have generated directly without CETT when the plan was to use the fast scorer for triage.",
+      "difficulty": "easy",
+      "why_easy": "Once identified, the fix was to generate pass@1 directly with model.generate() instead of going through bon.generate(), and only call bon.generate() for escalated tiers.",
+      "quality": 4,
+      "files": [
+        "src/runtime/server.py"
+      ],
+      "function": "do_POST",
+      "commit_before": "dffc92f",
+      "commit_after": "6ff09c4",
+      "extractable": true,
+      "tags": [
+        "python",
+        "performance",
+        "bug-fix"
+      ],
+      "task_group_id": "adaptive-fast-serve-cett-skip"
     }
   ]
 }
