@@ -70,6 +70,7 @@ class CycleConfig:
     probe_path: Path = Path("models/detector_probe.pkl")
     abstain_mix_ratio: float = 0.10
     abstain_max_rate: float = 0.15
+    training_seeds: int = 3  # multi-seed validation (autoresearch finding: seed variance ~0.007 BPB)
 
 
 @dataclass
@@ -431,26 +432,81 @@ def run_cycle(config: CycleConfig) -> CycleResult:
         )
 
         # --------------------------------------------------------------
-        # Step 8 — TRAIN (skip if too few examples)
+        # Step 8 — TRAIN with multi-seed validation
+        # Run N seeds, keep the adapter with best BPB. Prevents promoting
+        # a lucky seed (autoresearch finding: seed variance ~0.007 BPB).
         # --------------------------------------------------------------
         if not skipped_training:
-            candidate_adapter = config.output_dir / f"{cycle_id}_adapter"
-            train_config = TrainConfig(
-                data_dir=staging_dir,
-                budget_minutes=(
-                    15.0 if config.production else config.budget_minutes
-                ),
-                output_dir=candidate_adapter,
-                production=config.production,
-            )
-            try:
-                training_ok = train(train_config)
-            except Exception as e:
-                training_ok = False
-                console.print(f"[red]Training failed: {e}[/red]")
-                torch.cuda.empty_cache()
+            budget = 15.0 if config.production else config.budget_minutes
+            best_seed_bpb = float("inf")
+            best_seed_adapter = None
+            seed_results = []
 
-            # Staging dir cleanup: keep on failure (with marker), clean on success
+            for seed_idx in range(config.training_seeds):
+                seed_adapter = config.output_dir / f"{cycle_id}_adapter_seed{seed_idx}"
+                train_config = TrainConfig(
+                    data_dir=staging_dir,
+                    budget_minutes=budget,
+                    output_dir=seed_adapter,
+                    production=config.production,
+                )
+
+                console.print(
+                    f"\n  [bold]Seed {seed_idx + 1}/{config.training_seeds}[/bold] "
+                    f"({budget:.0f}m budget)")
+
+                try:
+                    seed_ok = train(train_config)
+                except Exception as e:
+                    seed_ok = False
+                    console.print(f"[red]Seed {seed_idx} failed: {e}[/red]")
+                    torch.cuda.empty_cache()
+
+                if seed_ok:
+                    # Read BPB from training metadata
+                    meta_path = seed_adapter / "training_metadata.json"
+                    if meta_path.exists():
+                        import json as _json
+                        meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                        bpb = meta.get("bpb", float("inf"))
+                        seed_results.append({
+                            "seed": seed_idx, "bpb": bpb,
+                            "steps": meta.get("steps", 0),
+                            "avg_loss": meta.get("avg_loss", 0),
+                        })
+                        console.print(
+                            f"    BPB={bpb:.4f} loss={meta.get('avg_loss', 0):.4f} "
+                            f"steps={meta.get('steps', 0)}")
+
+                        if bpb < best_seed_bpb:
+                            best_seed_bpb = bpb
+                            best_seed_adapter = seed_adapter
+                    training_ok = True
+                else:
+                    seed_results.append({"seed": seed_idx, "bpb": None, "failed": True})
+
+            # Pick the best seed
+            if best_seed_adapter is not None:
+                candidate_adapter = best_seed_adapter
+                # Clean up non-best seeds
+                for seed_idx in range(config.training_seeds):
+                    other = config.output_dir / f"{cycle_id}_adapter_seed{seed_idx}"
+                    if other.exists() and other != best_seed_adapter:
+                        shutil.rmtree(other)
+
+                if len(seed_results) > 1:
+                    bpbs = [r["bpb"] for r in seed_results if r.get("bpb")]
+                    if len(bpbs) > 1:
+                        import numpy as _np
+                        spread = max(bpbs) - min(bpbs)
+                        console.print(
+                            f"\n  Seed spread: {spread:.4f} BPB "
+                            f"(min={min(bpbs):.4f} max={max(bpbs):.4f})")
+            else:
+                training_ok = False
+                candidate_adapter = config.output_dir / f"{cycle_id}_adapter_seed0"
+
+            # Staging dir cleanup
             if staging_dir is not None and staging_dir.exists():
                 if training_ok:
                     shutil.rmtree(staging_dir)
@@ -608,6 +664,8 @@ def main() -> None:
     )
     parser.add_argument("--abstain-mix-ratio", type=float, default=0.10)
     parser.add_argument("--abstain-max-rate", type=float, default=0.15)
+    parser.add_argument("--seeds", type=int, default=3,
+                        help="Training seeds for multi-seed validation (default: 3)")
     args = parser.parse_args()
 
     config = CycleConfig(
@@ -624,6 +682,7 @@ def main() -> None:
         probe_path=args.probe_path,
         abstain_mix_ratio=args.abstain_mix_ratio,
         abstain_max_rate=args.abstain_max_rate,
+        training_seeds=args.seeds,
     )
 
     try:
