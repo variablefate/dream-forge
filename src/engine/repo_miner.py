@@ -34,6 +34,9 @@ MIN_FUNCTION_LINES = 5
 MAX_FUNCTION_LINES = 150
 MAX_FILES_PER_REPO = 100
 
+# Gitea mirror (local network)
+GITEA_URL = "https://vux6yabcp2fp3h25kjebsyreomg6cjzyqdcn4augkrjq63pkx4rpkeqd.local"
+
 
 # ── Data types ─────────────────────────────────────────────────────────────────
 
@@ -50,6 +53,44 @@ class CodeSnippet:
 
 
 # ── Fetch repos ────────────────────────────────────────────────────────────────
+
+def fetch_gitea_repos(gitea_url: str = GITEA_URL) -> list[dict]:
+    """Get repos from a local Gitea instance."""
+    import urllib.request
+    import ssl
+
+    # Skip SSL verification for self-signed certs on local network
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    repos = []
+    page = 1
+    while True:
+        url = f"{gitea_url}/api/v1/repos/search?limit=50&page={page}"
+        try:
+            req = urllib.request.Request(url)
+            resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+            data = json.loads(resp.read())
+            page_repos = data.get("data", data) if isinstance(data, dict) else data
+            if not page_repos:
+                break
+            for r in page_repos:
+                repos.append({
+                    "full_name": r.get("full_name", ""),
+                    "clone_url": r.get("clone_url", "").replace("http://", "https://"),
+                    "language": r.get("language"),
+                    "description": r.get("description"),
+                    "size": r.get("size", 0),
+                    "source": "gitea",
+                })
+            page += 1
+        except Exception as e:
+            console.print(f"  [yellow]Gitea API error: {e}[/yellow]")
+            break
+
+    return repos
+
 
 def fetch_starred_repos() -> list[dict]:
     """Get the user's starred repos from GitHub."""
@@ -91,9 +132,14 @@ def clone_or_update_repo(repo: dict, repos_dir: Path) -> Path | None:
 
     # Shallow clone (saves disk space)
     clone_url = repo.get("clone_url", f"https://github.com/{repo['full_name']}.git")
+    env = dict(**subprocess.os.environ)
+    # Disable SSL verification for Gitea (self-signed cert on local network)
+    if repo.get("source") == "gitea":
+        env["GIT_SSL_NO_VERIFY"] = "1"
     result = subprocess.run(
         ["git", "clone", "--depth", "1", clone_url, str(repo_path)],
         capture_output=True, text=True, timeout=120,
+        env=env,
     )
     if result.returncode != 0:
         console.print(f"  [red]Failed to clone {repo['full_name']}[/red]")
@@ -101,14 +147,33 @@ def clone_or_update_repo(repo: dict, repos_dir: Path) -> Path | None:
     return repo_path
 
 
-def fetch_all(repos_dir: Path = REPOS_DIR) -> list[Path]:
-    """Fetch/update all starred repos."""
+def fetch_all(repos_dir: Path = REPOS_DIR, include_gitea: bool = True) -> list[Path]:
+    """Fetch/update repos from GitHub stars + Gitea mirror."""
     repos_dir.mkdir(parents=True, exist_ok=True)
+
+    # Merge sources, dedup by full_name
     starred = fetch_starred_repos()
-    console.print(f"[bold]Fetching {len(starred)} starred repos[/bold]")
+    console.print(f"  GitHub starred: {len(starred)} repos")
+
+    all_repos = {r["full_name"]: r for r in starred}
+
+    if include_gitea:
+        gitea = fetch_gitea_repos()
+        console.print(f"  Gitea mirror: {len(gitea)} repos")
+        for r in gitea:
+            name = r["full_name"]
+            if name not in all_repos:
+                all_repos[name] = r
+            else:
+                # Prefer Gitea clone URL (local network = faster)
+                all_repos[name]["clone_url"] = r["clone_url"]
+                all_repos[name]["source"] = "gitea"
+
+    repos = list(all_repos.values())
+    console.print(f"[bold]Fetching {len(repos)} unique repos[/bold]")
 
     paths = []
-    for repo in starred:
+    for repo in repos:
         lang = repo.get("language") or "?"
         size_mb = (repo.get("size") or 0) / 1024
 
@@ -398,15 +463,17 @@ def main():
     parser = argparse.ArgumentParser(
         description="Mine starred GitHub repos for code snippets")
     parser.add_argument("--fetch", action="store_true",
-                        help="Clone/update starred repos")
+                        help="Clone/update repos from GitHub stars + Gitea mirror")
     parser.add_argument("--extract", action="store_true",
                         help="Extract code snippets from cloned repos")
     parser.add_argument("--stats", action="store_true",
                         help="Show extraction statistics")
+    parser.add_argument("--no-gitea", action="store_true",
+                        help="Skip Gitea mirror (GitHub stars only)")
     args = parser.parse_args()
 
     if args.fetch:
-        fetch_all()
+        fetch_all(include_gitea=not args.no_gitea)
     if args.extract:
         extract_all()
     if args.stats:
