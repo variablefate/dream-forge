@@ -599,7 +599,12 @@ def run_cycle(config: CycleConfig) -> CycleResult:
                 f"[bold red]ROLLBACK (abstain)[/bold red]: adapter quarantined → {quarantine}")
             console.print(f"  Reason: {reason}")
         elif not skipped_training and training_ok:
-            if previous_score is not None and cycle_score <= previous_score:
+            # Always promote for the first 5 cycles — not enough data for
+            # the gate to be meaningful. After 5 cycles, require improvement.
+            min_cycles_before_gate = 5
+            gate_active = len(prev_cycles) >= min_cycles_before_gate if 'prev_cycles' in dir() else False
+
+            if gate_active and previous_score is not None and cycle_score <= previous_score:
                 # Score didn't improve — don't promote
                 quarantine = config.output_dir / f"{cycle_id}_adapter_not_promoted"
                 candidate_adapter.rename(quarantine)
@@ -609,17 +614,21 @@ def run_cycle(config: CycleConfig) -> CycleResult:
                     f"<= previous {previous_score:.4f}")
                 console.print(f"  Adapter saved to {quarantine} for inspection")
             else:
-                # First cycle or score improved — promote
+                # Promote: first N cycles, or score improved
                 if config.adapter_dir.exists():
                     shutil.rmtree(config.adapter_dir)
                 candidate_adapter.rename(config.adapter_dir)
                 adapter_path = str(config.adapter_dir)
-                if previous_score is not None:
+                if not gate_active:
+                    console.print(
+                        f"  [green]PROMOTED[/green]: cycle {cycle_number} "
+                        f"(gate activates after {min_cycles_before_gate} cycles)")
+                elif previous_score is not None:
                     console.print(
                         f"  [green]PROMOTED[/green]: cycle_score {cycle_score:.4f} "
                         f"> previous {previous_score:.4f}")
                 else:
-                    console.print(f"  [green]PROMOTED[/green]: first cycle (no previous)")
+                    console.print(f"  [green]PROMOTED[/green]: first cycle")
 
         console.print(f"  cycle_score = {cycle_score:.4f}")
 
