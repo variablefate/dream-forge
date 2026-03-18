@@ -113,26 +113,50 @@ def create_app(model, tokenizer, bon, fast_scorer=None, default_n: int = 1, adap
 
                 # Adaptive 3-tier: generate pass@1, fast-score, escalate if needed
                 if adaptive and fast_scorer and n_samples > 1:
-                    # Step 1: Generate pass@1
-                    result = bon.generate(
-                        model, tokenizer, query,
-                        n=1, temperature=temperature, max_new_tokens=max_tokens)
+                    # Step 1: Generate pass@1 WITHOUT CETT (fast scorer decides first)
+                    from src.runtime.best_of_n import SYSTEM_PROMPT, BestOfNResult, ScoredResponse
+                    messages_gen = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": query},
+                    ]
+                    prompt_text = tokenizer.apply_chat_template(
+                        messages_gen, enable_thinking=False,
+                        tokenize=False, add_generation_prompt=True)
+                    device = next(model.parameters()).device
+                    inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
+                    prompt_len = inputs.input_ids.shape[1]
 
-                    # Step 2: Fast-score the response (~1ms)
-                    fast_risk = fast_scorer.score(result.text) if result.text.strip() else 1.0
+                    import torch
+                    safe_temp = max(temperature, 0.1)
+                    with torch.no_grad():
+                        out = model.generate(
+                            **inputs, max_new_tokens=max_tokens,
+                            temperature=safe_temp, top_p=0.9, do_sample=True)
+                    pass1_text = tokenizer.decode(
+                        out[0][prompt_len:], skip_special_tokens=True).strip()
 
-                    # Step 3: Decide whether to escalate
+                    # Step 2: Fast-score (~1ms, no CETT)
+                    fast_risk = fast_scorer.score(pass1_text) if pass1_text else 1.0
+
+                    # Step 3: Decide
                     if fast_risk < ADAPTIVE_TIER1:
-                        # Confident — serve immediately
+                        # Confident — serve pass@1 immediately, skip CETT entirely
+                        result = BestOfNResult(
+                            text=pass1_text,
+                            confidence=1.0 - fast_risk,
+                            strategy="fast_serve",
+                            n_generated=1,
+                            all_responses=[ScoredResponse(text=pass1_text, hallucination_risk=fast_risk)],
+                        )
                         adaptive_tier = "fast_serve"
                     elif fast_risk < ADAPTIVE_TIER2:
-                        # Slightly uncertain — best-of-2
+                        # Slightly uncertain — best-of-2 with CETT
                         result = bon.generate(
                             model, tokenizer, query,
                             n=2, temperature=temperature, max_new_tokens=max_tokens)
                         adaptive_tier = "best_of_2"
                     else:
-                        # Uncertain — full best-of-N
+                        # Uncertain — full best-of-N with CETT
                         result = bon.generate(
                             model, tokenizer, query,
                             n=n_samples, temperature=temperature, max_new_tokens=max_tokens)
@@ -149,6 +173,14 @@ def create_app(model, tokenizer, bon, fast_scorer=None, default_n: int = 1, adap
             except Exception as e:
                 self._send_error(500, f"Inference error: {str(e)[:200]}")
                 return
+
+            # Strip hedge prefix if max_tokens was very small (user wants short output)
+            response_text = result.text
+            if result.hedged and max_tokens <= 10:
+                # Don't prepend a 90-char hedge prefix to a 1-token response
+                from src.runtime.best_of_n import HEDGE_PREFIX
+                if response_text.startswith(HEDGE_PREFIX):
+                    response_text = response_text[len(HEDGE_PREFIX):]
 
             # OpenAI-compatible response format
             df_extra = {
@@ -172,7 +204,7 @@ def create_app(model, tokenizer, bon, fast_scorer=None, default_n: int = 1, adap
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": result.text,
+                        "content": response_text,
                     },
                     "finish_reason": "stop",
                 }],
