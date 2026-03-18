@@ -71,6 +71,7 @@ class CycleConfig:
     abstain_mix_ratio: float = 0.10
     abstain_max_rate: float = 0.15
     training_seeds: int = 1  # multi-seed available (--seeds 3) but default 1 for consumer GPU
+    promotion_gate_interval: int = 0  # 0 = off (always promote). Set to e.g. 10 to check every 10 cycles.
 
 
 @dataclass
@@ -599,36 +600,44 @@ def run_cycle(config: CycleConfig) -> CycleResult:
                 f"[bold red]ROLLBACK (abstain)[/bold red]: adapter quarantined → {quarantine}")
             console.print(f"  Reason: {reason}")
         elif not skipped_training and training_ok:
-            # Always promote for the first 5 cycles — not enough data for
-            # the gate to be meaningful. After 5 cycles, require improvement.
-            min_cycles_before_gate = 5
-            gate_active = len(prev_cycles) >= min_cycles_before_gate if 'prev_cycles' in dir() else False
+            # Promotion gate: off by default (interval=0 → always promote).
+            # When enabled (e.g. interval=10), compares current score against
+            # the score from N cycles ago — measures trend, not single-cycle noise.
+            gate_interval = config.promotion_gate_interval
+            gate_triggered = False
 
-            if gate_active and previous_score is not None and cycle_score <= previous_score:
-                # Score didn't improve — don't promote
+            if gate_interval > 0 and len(prev_cycles) >= gate_interval:
+                # Compare against the cycle from N cycles ago
+                compare_idx = max(0, len(prev_cycles) - gate_interval)
+                try:
+                    compare_data = json.loads(
+                        prev_cycles[compare_idx].read_text(encoding="utf-8"))
+                    compare_score = compare_data.get("cycle_score")
+                    if compare_score is not None and cycle_score <= compare_score:
+                        gate_triggered = True
+                        console.print(
+                            f"[yellow]NOT PROMOTED[/yellow]: score {cycle_score:.4f} "
+                            f"hasn't improved over {gate_interval} cycles "
+                            f"(was {compare_score:.4f})")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            if gate_triggered:
                 quarantine = config.output_dir / f"{cycle_id}_adapter_not_promoted"
                 candidate_adapter.rename(quarantine)
                 adapter_path = str(quarantine)
-                console.print(
-                    f"[yellow]NOT PROMOTED[/yellow]: cycle_score {cycle_score:.4f} "
-                    f"<= previous {previous_score:.4f}")
                 console.print(f"  Adapter saved to {quarantine} for inspection")
             else:
-                # Promote: first N cycles, or score improved
                 if config.adapter_dir.exists():
                     shutil.rmtree(config.adapter_dir)
                 candidate_adapter.rename(config.adapter_dir)
                 adapter_path = str(config.adapter_dir)
-                if not gate_active:
+                if gate_interval > 0:
                     console.print(
-                        f"  [green]PROMOTED[/green]: cycle {cycle_number} "
-                        f"(gate activates after {min_cycles_before_gate} cycles)")
-                elif previous_score is not None:
-                    console.print(
-                        f"  [green]PROMOTED[/green]: cycle_score {cycle_score:.4f} "
-                        f"> previous {previous_score:.4f}")
+                        f"  [green]PROMOTED[/green] (gate checks every "
+                        f"{gate_interval} cycles)")
                 else:
-                    console.print(f"  [green]PROMOTED[/green]: first cycle")
+                    console.print(f"  [green]PROMOTED[/green]")
 
         console.print(f"  cycle_score = {cycle_score:.4f}")
 
@@ -708,6 +717,8 @@ def main() -> None:
     parser.add_argument("--abstain-max-rate", type=float, default=0.15)
     parser.add_argument("--seeds", type=int, default=1,
                         help="Training seeds (default: 1, use 3+ for rigorous validation)")
+    parser.add_argument("--promotion-gate", type=int, default=0,
+                        help="Check for improvement every N cycles (0=off, always promote)")
     args = parser.parse_args()
 
     config = CycleConfig(
@@ -725,6 +736,7 @@ def main() -> None:
         abstain_mix_ratio=args.abstain_mix_ratio,
         abstain_max_rate=args.abstain_max_rate,
         training_seeds=args.seeds,
+        promotion_gate_interval=args.promotion_gate,
     )
 
     try:
