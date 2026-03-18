@@ -17,6 +17,9 @@ experiments/
 # Unsloth compiled cache (generated at runtime)
 unsloth_compiled_cache/
 
+# Environment (personal config — Gitea URL, API keys, etc.)
+.env
+
 # System
 .DS_Store
 Thumbs.db
