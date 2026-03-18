@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import subprocess
 import sys
 import time
@@ -34,8 +35,8 @@ MIN_FUNCTION_LINES = 5
 MAX_FUNCTION_LINES = 150
 MAX_FILES_PER_REPO = 100
 
-# Gitea mirror (local network)
-GITEA_URL = "https://vux6yabcp2fp3h25kjebsyreomg6cjzyqdcn4augkrjq63pkx4rpkeqd.local"
+# Gitea mirror (optional, set via env var or --gitea-url)
+GITEA_URL = os.environ.get("DREAMFORGE_GITEA_URL", "")
 
 
 # ── Data types ─────────────────────────────────────────────────────────────────
@@ -147,18 +148,24 @@ def clone_or_update_repo(repo: dict, repos_dir: Path) -> Path | None:
     return repo_path
 
 
-def fetch_all(repos_dir: Path = REPOS_DIR, include_gitea: bool = True) -> list[Path]:
-    """Fetch/update repos from GitHub stars + Gitea mirror."""
+def fetch_all(repos_dir: Path = REPOS_DIR, gitea_url: str = "") -> list[Path]:
+    """Fetch/update repos from GitHub stars + optional Gitea mirror.
+
+    For most users: just uses GitHub starred repos (gh CLI authenticated).
+    For self-hosters: set DREAMFORGE_GITEA_URL env var or pass --gitea-url.
+    """
     repos_dir.mkdir(parents=True, exist_ok=True)
 
-    # Merge sources, dedup by full_name
+    # GitHub stars (primary source for everyone)
     starred = fetch_starred_repos()
     console.print(f"  GitHub starred: {len(starred)} repos")
 
     all_repos = {r["full_name"]: r for r in starred}
 
-    if include_gitea:
-        gitea = fetch_gitea_repos()
+    # Gitea mirror (optional, for self-hosters)
+    gitea_url = gitea_url or GITEA_URL
+    if gitea_url:
+        gitea = fetch_gitea_repos(gitea_url)
         console.print(f"  Gitea mirror: {len(gitea)} repos")
         for r in gitea:
             name = r["full_name"]
@@ -168,6 +175,8 @@ def fetch_all(repos_dir: Path = REPOS_DIR, include_gitea: bool = True) -> list[P
                 # Prefer Gitea clone URL (local network = faster)
                 all_repos[name]["clone_url"] = r["clone_url"]
                 all_repos[name]["source"] = "gitea"
+    else:
+        console.print("  Gitea: not configured (set DREAMFORGE_GITEA_URL or --gitea-url)", style="dim")
 
     repos = list(all_repos.values())
     console.print(f"[bold]Fetching {len(repos)} unique repos[/bold]")
@@ -468,12 +477,12 @@ def main():
                         help="Extract code snippets from cloned repos")
     parser.add_argument("--stats", action="store_true",
                         help="Show extraction statistics")
-    parser.add_argument("--no-gitea", action="store_true",
-                        help="Skip Gitea mirror (GitHub stars only)")
+    parser.add_argument("--gitea-url", type=str, default="",
+                        help="Gitea instance URL (or set DREAMFORGE_GITEA_URL)")
     args = parser.parse_args()
 
     if args.fetch:
-        fetch_all(include_gitea=not args.no_gitea)
+        fetch_all(gitea_url=args.gitea_url)
     if args.extract:
         extract_all()
     if args.stats:
