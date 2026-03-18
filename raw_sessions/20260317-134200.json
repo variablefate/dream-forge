@@ -1,13 +1,14 @@
 {
   "session_id": "20260317-134200",
-  "repo_hash": "6ff09c4",
+  "repo_hash": "317bbc8",
   "git_start_hash": "6a07e08",
   "commits": [
     "82603fe",
     "a57bf88",
     "52f6f22",
     "bc90573",
-    "6ff09c4"
+    "6ff09c4",
+    "317bbc8"
   ],
   "moments": [
     {
@@ -100,6 +101,25 @@
         "bug-fix"
       ],
       "task_group_id": "adaptive-fast-serve-cett-skip"
+    },
+    {
+      "id": "20260317-134200-005",
+      "moment_type": "reasoning",
+      "problem": "The compliance benchmark showed the model correctly pushing back on false premises (dict.sorted_keys doesnt exist, MD5 insecure, etc.) but the detector hedged 77% of these correct pushbacks with I am not confident prefix. The detector was trained on TriviaQA factual correctness, not on false-premise pushback patterns. A correction that discusses wrong information (the users false premise) triggers similar activation patterns to actually being wrong.",
+      "difficulty": "hard",
+      "why_hard": "Required understanding the interaction between two systems: the model correctly identifies false premises, but the detector trained on different data misinterprets the correction as hallucination. Two-layer over-caution stacking. Solution needed to be targeted \u2014 not just lower threshold globally but detect correction-specific language.",
+      "quality": 4,
+      "context_notes": "Compliance bench results: 0/13 pure over-compliance, 3/13 clean pushbacks, 8/13 mixed (correct + hedged). The mixed responses WERE correct \u2014 they said doesnt exist, use X instead but got hedged because the detector saw discussion of incorrect APIs as risky activation patterns.\n\nTwo fixes applied:\n1. Raised hedge threshold from 0.7 to 0.85 \u2014 fewer borderline responses get hedged\n2. Added correction_override: responses containing pushback phrases (doesnt exist, not a valid, instead use, not secure, counterproductive) skip hedge entirely\n\nKey insight: hedging a correction undermines the models authority. If the model correctly says MD5 is insecure, use bcrypt \u2014 prepending I am not confident makes the user doubt the correct advice. The detector should protect against hallucination, not against correct pushback.",
+      "resolution_type": "research_finding",
+      "files": [
+        "src/runtime/best_of_n.py"
+      ],
+      "tags": [
+        "machine-learning",
+        "architecture",
+        "evaluation"
+      ],
+      "task_group_id": "over-hedging-correction-fix"
     }
   ]
 }
