@@ -39,12 +39,12 @@ DEFAULT_N = 4
 DETECTOR_PROBE_PATH = Path("models/detector_probe.pkl")
 FAST_SCORER_PATH = Path("models/fast_scorer.pkl")
 
-# Adaptive 3-tier thresholds (validated on 50-question benchmark)
+# Adaptive 3-tier thresholds (optimized via 400-sample parameter sweep)
 # risk < TIER1 → serve pass@1 immediately
 # risk TIER1-TIER2 → best-of-2 with CETT
 # risk > TIER2 → best-of-4 with CETT
-ADAPTIVE_TIER1 = 0.2   # below this: confident, serve fast
-ADAPTIVE_TIER2 = 0.4   # below this: slightly uncertain, best-of-2
+ADAPTIVE_TIER1 = 0.25  # below this: confident, serve fast (17% of queries)
+ADAPTIVE_TIER2 = 0.60  # below this: slightly uncertain, best-of-2 (44% of queries)
 
 
 def create_app(model, tokenizer, bon, fast_scorer=None, default_n: int = 1, adaptive: bool = True):
