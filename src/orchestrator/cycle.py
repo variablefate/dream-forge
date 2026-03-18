@@ -573,20 +573,53 @@ def run_cycle(config: CycleConfig) -> CycleResult:
         )
         save_abstain_metrics(current_metrics, Path("data/abstain_metrics.jsonl"))
 
-        # Operational rollback (only relevant if training happened)
+        # Promotion gate: only replace adapter if cycle_score improved
+        previous_score = None
+        if not skipped_training and training_ok:
+            # Load previous cycle's score
+            import re as _re
+            pattern = _re.compile(r"^\d{8}T\d{6}\.json$")
+            prev_cycles = sorted([
+                f for f in config.output_dir.iterdir()
+                if pattern.match(f.name) and f.name != f"{cycle_id}.json"
+            ], key=lambda f: f.name)
+            if prev_cycles:
+                try:
+                    prev_data = json.loads(prev_cycles[-1].read_text(encoding="utf-8"))
+                    previous_score = prev_data.get("cycle_score")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        # Decide: promote, rollback, or quarantine
         if not skipped_training and should_rollback and training_ok:
             quarantine = config.output_dir / f"{cycle_id}_adapter_quarantined"
             candidate_adapter.rename(quarantine)
             adapter_path = str(quarantine)
             console.print(
-                f"[bold red]ROLLBACK[/bold red]: adapter quarantined → {quarantine}"
-            )
+                f"[bold red]ROLLBACK (abstain)[/bold red]: adapter quarantined → {quarantine}")
             console.print(f"  Reason: {reason}")
         elif not skipped_training and training_ok:
-            if config.adapter_dir.exists():
-                shutil.rmtree(config.adapter_dir)
-            candidate_adapter.rename(config.adapter_dir)
-            adapter_path = str(config.adapter_dir)
+            if previous_score is not None and cycle_score <= previous_score:
+                # Score didn't improve — don't promote
+                quarantine = config.output_dir / f"{cycle_id}_adapter_not_promoted"
+                candidate_adapter.rename(quarantine)
+                adapter_path = str(quarantine)
+                console.print(
+                    f"[yellow]NOT PROMOTED[/yellow]: cycle_score {cycle_score:.4f} "
+                    f"<= previous {previous_score:.4f}")
+                console.print(f"  Adapter saved to {quarantine} for inspection")
+            else:
+                # First cycle or score improved — promote
+                if config.adapter_dir.exists():
+                    shutil.rmtree(config.adapter_dir)
+                candidate_adapter.rename(config.adapter_dir)
+                adapter_path = str(config.adapter_dir)
+                if previous_score is not None:
+                    console.print(
+                        f"  [green]PROMOTED[/green]: cycle_score {cycle_score:.4f} "
+                        f"> previous {previous_score:.4f}")
+                else:
+                    console.print(f"  [green]PROMOTED[/green]: first cycle (no previous)")
 
         console.print(f"  cycle_score = {cycle_score:.4f}")
 
