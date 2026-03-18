@@ -364,6 +364,26 @@ class BestOfN:
         layer_io.clear()
         return responses
 
+    @staticmethod
+    def _looks_like_short_factual(text: str) -> bool:
+        """Detect short math/factual answers that shouldn't be hedged.
+
+        The fast scorer and CETT probe over-flag short confident answers
+        (e.g. "7 * 8 = 56", "There are 7 days") because they resemble
+        hallucinated trivia. But short factual answers are usually correct.
+        """
+        stripped = text.strip()
+        if len(stripped) > 200:
+            return False
+        # Contains a number and is short — likely math or simple fact
+        import re
+        has_number = bool(re.search(r'\d', stripped))
+        is_short = len(stripped) < 100
+        # Common math/factual patterns
+        has_equals = '=' in stripped or 'is **' in stripped or 'is:' in stripped
+        has_math_op = any(op in stripped for op in ['×', '*', '+', '-', '÷', '/'])
+        return is_short and has_number and (has_equals or has_math_op)
+
     def _select(
         self, responses: list[ScoredResponse], n: int, elapsed: float,
     ) -> BestOfNResult:
@@ -371,8 +391,20 @@ class BestOfN:
 
         # Check hedge trigger: ALL responses high-risk
         if all(r.hallucination_risk > self.hedge_threshold for r in responses):
-            # Pick the least-bad one but prepend hedge
             best = min(responses, key=lambda r: r.hallucination_risk)
+
+            # Skip hedge on short factual/math answers — the detector
+            # over-flags these because they resemble hallucinated trivia
+            if self._looks_like_short_factual(best.text):
+                return BestOfNResult(
+                    text=best.text,
+                    confidence=1.0 - best.hallucination_risk,
+                    strategy="factual_override",
+                    n_generated=n,
+                    all_responses=responses,
+                    elapsed_seconds=elapsed,
+                )
+
             # If best response is empty, hedge prefix alone is meaningless
             hedge_text = (HEDGE_PREFIX + best.text) if best.text.strip() else ""
             return BestOfNResult(
