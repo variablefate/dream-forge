@@ -70,7 +70,7 @@ class CycleConfig:
     probe_path: Path = Path("models/detector_probe.pkl")
     abstain_mix_ratio: float = 0.10
     abstain_max_rate: float = 0.15
-    training_seeds: int = 3  # multi-seed validation (autoresearch finding: seed variance ~0.007 BPB)
+    training_seeds: int = 1  # multi-seed available (--seeds 3) but default 1 for consumer GPU
 
 
 @dataclass
@@ -664,8 +664,8 @@ def main() -> None:
     )
     parser.add_argument("--abstain-mix-ratio", type=float, default=0.10)
     parser.add_argument("--abstain-max-rate", type=float, default=0.15)
-    parser.add_argument("--seeds", type=int, default=3,
-                        help="Training seeds for multi-seed validation (default: 3)")
+    parser.add_argument("--seeds", type=int, default=1,
+                        help="Training seeds (default: 1, use 3+ for rigorous validation)")
     args = parser.parse_args()
 
     config = CycleConfig(
