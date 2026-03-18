@@ -37,7 +37,7 @@ console = Console()
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 DEFAULT_N = 4
-DEFAULT_HEDGE_THRESHOLD = 0.7  # if all samples score above this, hedge
+DEFAULT_HEDGE_THRESHOLD = 0.85  # if all samples score above this, hedge (raised from 0.7 — was over-hedging correct pushbacks)
 DEFAULT_TEMPERATURE = 0.7
 MAX_NEW_TOKENS = 512
 DETECTOR_PROBE_PATH = Path("models/detector_probe.pkl")
@@ -366,23 +366,39 @@ class BestOfN:
 
     @staticmethod
     def _looks_like_short_factual(text: str) -> bool:
-        """Detect short math/factual answers that shouldn't be hedged.
-
-        The fast scorer and CETT probe over-flag short confident answers
-        (e.g. "7 * 8 = 56", "There are 7 days") because they resemble
-        hallucinated trivia. But short factual answers are usually correct.
-        """
+        """Detect short math/factual answers that shouldn't be hedged."""
         stripped = text.strip()
         if len(stripped) > 200:
             return False
-        # Contains a number and is short — likely math or simple fact
         import re
         has_number = bool(re.search(r'\d', stripped))
         is_short = len(stripped) < 100
-        # Common math/factual patterns
         has_equals = '=' in stripped or 'is **' in stripped or 'is:' in stripped
         has_math_op = any(op in stripped for op in ['×', '*', '+', '-', '÷', '/'])
         return is_short and has_number and (has_equals or has_math_op)
+
+    @staticmethod
+    def _looks_like_correction(text: str) -> bool:
+        """Detect responses that push back on false premises.
+
+        When a user asks about a nonexistent API or wrong assumption, the
+        model's correction discusses the incorrect thing (triggering the
+        detector) while providing the right answer. Hedging a correction
+        undermines the model's correct pushback.
+        """
+        lower = text.lower()
+        correction_phrases = [
+            "doesn't exist", "does not exist", "not a valid",
+            "no such", "not a method", "not a function", "not a parameter",
+            "not available", "not supported", "is not a",
+            "instead use", "instead, use", "you should use",
+            "the correct way", "the right way",
+            "cannot", "can't", "i can't help you",
+            "not recommended", "not secure", "insecure",
+            "won't fix", "doesn't fix", "will not fix",
+            "counterproductive", "not the right solution",
+        ]
+        return any(phrase in lower for phrase in correction_phrases)
 
     def _select(
         self, responses: list[ScoredResponse], n: int, elapsed: float,
@@ -400,6 +416,18 @@ class BestOfN:
                     text=best.text,
                     confidence=1.0 - best.hallucination_risk,
                     strategy="factual_override",
+                    n_generated=n,
+                    all_responses=responses,
+                    elapsed_seconds=elapsed,
+                )
+
+            # Skip hedge on corrections/pushbacks — the model is correctly
+            # rejecting a false premise. Hedging undermines the correction.
+            if self._looks_like_correction(best.text):
+                return BestOfNResult(
+                    text=best.text,
+                    confidence=1.0 - best.hallucination_risk,
+                    strategy="correction_override",
                     n_generated=n,
                     all_responses=responses,
                     elapsed_seconds=elapsed,
