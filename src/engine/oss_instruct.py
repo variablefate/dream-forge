@@ -41,7 +41,8 @@ def load_snippets(snippets_dir: Path = SNIPPETS_DIR) -> list[dict]:
     """Load all extracted snippets from JSONL files."""
     snippets = []
     for f in snippets_dir.glob("*.jsonl"):
-        for line in open(f, encoding="utf-8"):
+        with open(f, encoding="utf-8") as fh:
+            for line in fh:
             try:
                 snippets.append(json.loads(line))
             except json.JSONDecodeError:
@@ -77,9 +78,9 @@ def filter_snippets(snippets: list[dict]) -> list[dict]:
                      "onresume", "onpause", "build", "dispose"):
             continue
 
-        # Skip if we've seen this function name from another repo
-        # (prevents duplicates like multiple "parse" functions)
-        dedup_key = f"{name}_{s['language']}"
+        # Skip exact duplicates (same name + language + repo)
+        # but allow same function name from different repos (legitimate diversity)
+        dedup_key = f"{name}_{s['language']}_{s['repo']}"
         if dedup_key in seen_names:
             continue
         seen_names.add(dedup_key)
@@ -321,8 +322,17 @@ def run_oss_instruct(
             is_verified, _ = verify_round_trip(
                 model, tokenizer, instruction, snippet["code"], snippet["language"])
 
-        # Build and save experiment
+        # Build and validate experiment
         exp = build_oss_experiment(snippet, instruction, is_verified)
+
+        # Validate against schema before saving
+        try:
+            from src.capture.schema import Experiment
+            Experiment(**exp)
+        except Exception as e:
+            failed += 1
+            print(f"  [{i+1}/{len(candidates)}] INVALID {snippet['name']} — {str(e)[:80]}")
+            continue
 
         slug = f"oss-{snippet['language']}-{snippet['name'][:20]}"
         filename = f"oss-{datetime.now().strftime('%Y%m%d%H%M%S')}-{i:03d}-{slug}.json"

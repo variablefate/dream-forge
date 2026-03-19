@@ -461,11 +461,12 @@ def show_stats(output_dir: Path = SNIPPETS_DIR):
 
     for f in output_dir.glob("*.jsonl"):
         count = 0
-        for line in open(f, encoding="utf-8"):
-            record = json.loads(line)
-            count += 1
-            lang = record["language"]
-            by_lang[lang] = by_lang.get(lang, 0) + 1
+        with open(f, encoding="utf-8") as fh:
+            for line in fh:
+                record = json.loads(line)
+                count += 1
+                lang = record["language"]
+                by_lang[lang] = by_lang.get(lang, 0) + 1
         repo_name = f.stem.replace("__", "/")
         by_repo[repo_name] = count
         total += count

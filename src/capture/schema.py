@@ -45,6 +45,9 @@ class SyntheticGenerator(str, Enum):
     COUNTERFACTUAL = "counterfactual"
     REPLAY = "replay"
     HIGH_TEMP = "high_temp"
+    OSS_INSTRUCT = "oss_instruct"
+    SELF_CORRECTION = "self_correction"
+    CLAUDE_ESCALATION = "claude_escalation"
 
 
 class ContextFile(BaseModel):
