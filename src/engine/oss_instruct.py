@@ -43,10 +43,10 @@ def load_snippets(snippets_dir: Path = SNIPPETS_DIR) -> list[dict]:
     for f in snippets_dir.glob("*.jsonl"):
         with open(f, encoding="utf-8") as fh:
             for line in fh:
-            try:
-                snippets.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+                try:
+                    snippets.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     return snippets
 
 
